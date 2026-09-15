@@ -37,7 +37,6 @@
             border: 2px solid #ddd;
         }
         
-        /* Стили кнопок */
         button {
             border: none;
             padding: 15px;
@@ -56,9 +55,9 @@
         .control-panel { display: none; gap: 10px; width: 100%; margin-bottom: 10px; }
         .control-panel button { margin-bottom: 0; flex: 1; padding: 12px; font-size: 0.95rem; }
         
-        #calibrateBtn { background-color: #34c759; } /* Зеленая */
-        #recordBtn { background-color: #ff9500; } /* Оранжевая */
-        #replayBtn { background-color: #af52de; display: none; } /* Фиолетовая */
+        #calibrateBtn { background-color: #34c759; } 
+        #recordBtn { background-color: #ff9500; } 
+        #replayBtn { background-color: #af52de; display: none; } 
         
         #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; font-weight: 500; }
     </style>
@@ -67,7 +66,6 @@
 
     <button id="connectBtn">Подключить сенсор</button>
     
-    <!-- Панель управления (появится после подключения) -->
     <div class="control-panel" id="controlPanel">
         <button id="calibrateBtn">Центровка</button>
         <button id="recordBtn">Запись (10с)</button>
@@ -76,13 +74,11 @@
     
     <div id="status">Отключено</div>
 
-    <!-- Блок стабилометрии -->
     <div class="card">
         <h2>Баланс (Паттерн падения)</h2>
         <canvas id="balanceCanvas" width="250" height="250"></canvas>
     </div>
 
-    <!-- Блок ММТ -->
     <div class="card" style="flex: 1.2;">
         <h2>График силы ММТ (FSR)</h2>
         <div class="canvas-container">
@@ -92,13 +88,23 @@
 
     <script>
         // ==========================================
-        // НАСТРОЙКИ
+        // ГЛАВНЫЕ НАСТРОЙКИ (МЕНЯЙ ПОД СЕБЯ)
         // ==========================================
-        const BALANCE_SENSITIVITY = 15; 
-        const FSR_MAX_Y = 100; // Потолок графика давления
-        const BALANCE_SMOOTHING = 0.8; 
-        const TRAIL_LENGTH = 300; // Длина следа на экране
-        const RECORD_TIME_MS = 10000; // Время записи в миллисекундах (10 секунд)
+        
+        // 1. ЧУВСТВИТЕЛЬНОСТЬ (увеличено с 15 до 50). Если слишком быстро - сделай 30. Если мало - 70.
+        const BALANCE_SENSITIVITY = 50; 
+        
+        // 2. НАСТРОЙКА ОСЕЙ
+        const SWAP_AXES = true;  // true: Меняет местами (вперед-назад становится влево-вправо). То, что ты просил!
+        const INVERT_X = false;  // true: Сделает движение влево/вправо зеркальным, если вдруг оно перепутано.
+        const INVERT_Y = false;  // true: Сделает движение вперед/назад зеркальным.
+        
+        // 3. ПРОЧИЕ ПАРАМЕТРЫ
+        const FSR_MAX_Y = 100;        // Потолок давления
+        const BALANCE_SMOOTHING = 0.8; // Плавность (0.1 - резко, 0.9 - очень плавно)
+        const TRAIL_LENGTH = 300;     // Длина синего следа
+        const RECORD_TIME_MS = 10000; // Время записи (10000 = 10 сек)
+        
         // ==========================================
 
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -106,19 +112,16 @@
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
-        // Базовые переменные
         let currentFsr = 0, currentPitch = 0, currentRoll = 0;
-        let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; // Калибровочные нули
+        let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; 
         let smoothPitch = 0, smoothRoll = 0;
         let pathHistory = [];
 
-        // Переменные для режима Записи/Проигрывания
         let isRecording = false;
         let isReplaying = false;
         let recordedSession = [];
         let replayFrame = 0;
 
-        // Инициализация Canvas
         const canvas = document.getElementById('balanceCanvas');
         const ctx = canvas.getContext('2d');
         const cx = canvas.width / 2;
@@ -127,7 +130,6 @@
         function drawBalance() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Сетка мишени
             ctx.strokeStyle = '#e0e0e0';
             ctx.lineWidth = 1;
             for(let r = 30; r <= 120; r += 30) {
@@ -136,19 +138,19 @@
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
-            // Отрисовка СЛЕДА (линии)
+            // Отрисовка следа
             if (pathHistory.length > 1) {
                 ctx.beginPath();
                 ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
                 for(let i = 1; i < pathHistory.length; i++) {
                     ctx.lineTo(pathHistory[i].x, pathHistory[i].y);
                 }
-                ctx.strokeStyle = '#007aff'; // Синий цвет линии
+                ctx.strokeStyle = '#007aff';
                 ctx.lineWidth = 2;
                 ctx.stroke();
             }
 
-            // Отрисовка текущей точки (красный кружок)
+            // Отрисовка точки
             if (pathHistory.length > 0) {
                 let lastPoint = pathHistory[pathHistory.length - 1];
                 ctx.beginPath();
@@ -162,7 +164,6 @@
         }
         drawBalance(); 
 
-        // Инициализация Графика
         const ctxChart = document.getElementById('fsrChart').getContext('2d');
         const fsrChart = new Chart(ctxChart, {
             type: 'line',
@@ -183,22 +184,24 @@
             }
         });
 
-        // Главная функция обработки визуализации (вызывается и для Live, и для Проигрывателя)
         function processVisuals(rawFsr, rawPitch, rawRoll) {
-            // Применяем калибровку (вычитаем стартовые "нули")
-            // Math.max(0, ...) гарантирует, что график давления не уйдет в минус
             let f = Math.max(0, rawFsr - fsrOffset); 
             let p = rawPitch - pitchOffset;
             let r = rawRoll - rollOffset;
 
-            // Сглаживание гироскопа
             smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
             smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
 
-            let markerX = cx + (smoothRoll * BALANCE_SENSITIVITY);
-            let markerY = cy - (smoothPitch * BALANCE_SENSITIVITY); 
+            // ЛОГИКА ПЕРЕКЛЮЧЕНИЯ ОСЕЙ
+            let xVal = SWAP_AXES ? smoothPitch : smoothRoll;
+            let yVal = SWAP_AXES ? smoothRoll : smoothPitch;
 
-            // Защита от вылета за края мишени
+            let dirX = INVERT_X ? -1 : 1;
+            let dirY = INVERT_Y ? -1 : 1;
+
+            let markerX = cx + (xVal * BALANCE_SENSITIVITY * dirX);
+            let markerY = cy - (yVal * BALANCE_SENSITIVITY * dirY); 
+
             markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
             markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
 
@@ -212,11 +215,9 @@
             drawBalance();
         }
 
-        // --- КНОПКА: ЦЕНТРОВКА ---
         document.getElementById('calibrateBtn').addEventListener('click', () => {
             if(isRecording || isReplaying) return;
             
-            // Запоминаем новые нули гироскопа И ДАВЛЕНИЯ
             pitchOffset = currentPitch;
             rollOffset = currentRoll;
             fsrOffset = currentFsr; 
@@ -232,21 +233,19 @@
             document.getElementById('status').style.color = "#34c759";
         });
 
-        // --- КНОПКА: ЗАПИСЬ ---
         document.getElementById('recordBtn').addEventListener('click', () => {
             if(isReplaying) return;
             
             isRecording = true;
             recordedSession = [];
-            pathHistory = []; // очищаем старый след перед новой записью
-            fsrChart.data.datasets[0].data = Array(50).fill(0); // сбрасываем график
+            pathHistory = []; 
+            fsrChart.data.datasets[0].data = Array(50).fill(0); 
             
             document.getElementById('status').innerText = "ИДЕТ ЗАПИСЬ (10 сек)...";
             document.getElementById('status').style.color = "#ff3b30";
             document.getElementById('recordBtn').disabled = true;
             document.getElementById('replayBtn').style.display = "none";
 
-            // Таймер остановки записи
             setTimeout(() => {
                 isRecording = false;
                 document.getElementById('status').innerText = "Запись завершена!";
@@ -254,19 +253,17 @@
                 document.getElementById('recordBtn').disabled = false;
                 
                 if (recordedSession.length > 0) {
-                    document.getElementById('replayBtn').style.display = "block"; // Показываем кнопку проигрывания
+                    document.getElementById('replayBtn').style.display = "block"; 
                 }
             }, RECORD_TIME_MS);
         });
 
-        // --- КНОПКА: ПРОИГРАТЬ ---
         document.getElementById('replayBtn').addEventListener('click', () => {
             if(isRecording || recordedSession.length === 0) return;
             
             isReplaying = true;
             replayFrame = 0;
             
-            // Сброс визуализации для старта из центра
             pathHistory = [];
             smoothPitch = 0; 
             smoothRoll = 0;
@@ -275,10 +272,9 @@
             document.getElementById('status').innerText = "ПРОИГРЫВАНИЕ ЗАПИСИ...";
             document.getElementById('status').style.color = "#af52de";
             
-            replayStep(); // Запускаем цикл воспроизведения
+            replayStep(); 
         });
 
-        // Функция пошагового воспроизведения
         function replayStep() {
             if (!isReplaying) return;
             
@@ -289,15 +285,13 @@
                 return;
             }
             
-            // Берем сохраненный кадр и отправляем на отрисовку
             let frame = recordedSession[replayFrame];
             processVisuals(frame.f, frame.p, frame.r);
             
             replayFrame++;
-            setTimeout(replayStep, 30); // Задержка ~30мс (воспроизведение в реальном времени)
+            setTimeout(replayStep, 30); 
         }
 
-        // --- BLE ЛОГИКА ---
         document.getElementById('connectBtn').addEventListener('click', async () => {
             try {
                 document.getElementById('status').innerText = "Поиск устройства...";
@@ -346,17 +340,14 @@
                     let [fsr, pitch, roll] = line.split(',').map(Number);
                     
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
-                        // Постоянно обновляем текущие сырые значения
                         currentFsr = fsr;
                         currentPitch = pitch;
                         currentRoll = roll;
                         
-                        // Если идет запись - сохраняем сырые данные
                         if (isRecording) {
                             recordedSession.push({ f: fsr, p: pitch, r: roll });
                         }
 
-                        // Если сейчас НЕ идет проигрывание записи - рисуем Live-данные
                         if (!isReplaying) {
                             processVisuals(fsr, pitch, roll);
                         }
