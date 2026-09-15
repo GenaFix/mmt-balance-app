@@ -2,10 +2,8 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <!-- Настройка viewport для корректного отображения на iPhone -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>MMT & Balance Diagnostics</title>
-    <!-- Подключаем Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -54,13 +52,15 @@
             width: 100%;
             margin-bottom: 10px;
         }
-        button:active { background-color: #005bb5; }
+        button:active { filter: brightness(0.9); }
+        #calibrateBtn { background-color: #34c759; display: none; } /* Зеленая кнопка калибровки, изначально скрыта */
         #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
     <button id="connectBtn">Подключить сенсор</button>
+    <button id="calibrateBtn">Начать диагностику (Центровка)</button>
     <div id="status">Отключено</div>
 
     <!-- Блок стабилометрии (Баланс) -->
@@ -84,13 +84,19 @@
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
+        // --- Переменные для центровки (калибровки) ---
+        let currentPitch = 0;
+        let currentRoll = 0;
+        let pitchOffset = 0;
+        let rollOffset = 0;
+
         // --- Инициализация графики (Баланс) ---
         const canvas = document.getElementById('balanceCanvas');
         const ctx = canvas.getContext('2d');
         const cx = canvas.width / 2;
         const cy = canvas.height / 2;
 
-        function drawBalance(pitch, roll) {
+        function drawBalance(relativePitch, relativeRoll) {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
             // Отрисовка мишени
@@ -106,10 +112,8 @@
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
             // Вычисление позиции маркера
-            // Roll (влево/вправо) -> X, Pitch (вперед/назад) -> Y
-            // Множитель "3" задает чувствительность графика (градусы -> пиксели)
-            let markerX = cx + (roll * 3);
-            let markerY = cy - (pitch * 3); // минус, так как Y в canvas растет вниз
+            let markerX = cx + (relativeRoll * 3);
+            let markerY = cy - (relativePitch * 3); 
 
             // Ограничение выхода за границы
             markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
@@ -124,32 +128,33 @@
             ctx.lineWidth = 2;
             ctx.stroke();
         }
-        drawBalance(0, 0); // Начальная отрисовка
+        drawBalance(0, 0); 
 
         // --- Инициализация графики (ММТ FSR) ---
         const ctxChart = document.getElementById('fsrChart').getContext('2d');
         const fsrChart = new Chart(ctxChart, {
             type: 'line',
             data: {
-                labels: Array(50).fill(''), // Окно на 50 точек
+                labels: Array(50).fill(''), 
                 datasets: [{
                     label: 'Сила давления',
                     data: Array(50).fill(0),
                     borderColor: '#007aff',
                     backgroundColor: 'rgba(0, 122, 255, 0.1)',
                     borderWidth: 2,
-                    pointRadius: 0, // Убираем точки для вида кардиограммы
+                    pointRadius: 0, 
                     fill: true,
-                    tension: 0.2 // Легкое сглаживание
+                    tension: 0.2 
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                animation: false, // Отключаем анимацию для высокой производительности реального времени
+                animation: false, 
                 scales: {
                     x: { display: false },
-                    y: { beginAtZero: true, suggestedMax: 1000 } // Подстройте max под диапазон вашего АЦП (например 4095 для ESP32/nRF)
+                    // ВНИМАНИЕ: Измените 100 на другое значение под ваш новый датчик 3 кг, если график улетает вверх
+                    y: { beginAtZero: true, suggestedMax: 100 } 
                 },
                 plugins: { legend: { display: false } }
             }
@@ -157,9 +162,23 @@
 
         function updateFSR(fsrValue) {
             fsrChart.data.datasets[0].data.push(fsrValue);
-            fsrChart.data.datasets[0].data.shift(); // Удаляем старую точку
-            fsrChart.update('none'); // Обновление без анимации
+            fsrChart.data.datasets[0].data.shift(); 
+            fsrChart.update('none'); 
         }
+
+        // --- Обработчик кнопки Калибровки ---
+        document.getElementById('calibrateBtn').addEventListener('click', () => {
+            // Запоминаем текущие углы как нулевую точку
+            pitchOffset = currentPitch;
+            rollOffset = currentRoll;
+            
+            // Очищаем график FSR для нового теста
+            fsrChart.data.datasets[0].data = Array(50).fill(0);
+            fsrChart.update('none');
+
+            document.getElementById('status').innerText = "Центр установлен! Идет запись...";
+            document.getElementById('status').style.color = "#ff3b30"; // Красный цвет как индикатор записи
+        });
 
         // --- Логика Web Bluetooth API ---
         document.getElementById('connectBtn').addEventListener('click', async () => {
@@ -173,6 +192,9 @@
 
                 bleDevice.addEventListener('gattserverdisconnected', () => {
                     document.getElementById('status').innerText = "Устройство отключено";
+                    document.getElementById('status').style.color = "#666";
+                    document.getElementById('connectBtn').style.display = "block";
+                    document.getElementById('calibrateBtn').style.display = "none";
                 });
 
                 document.getElementById('status').innerText = "Подключение к GATT...";
@@ -183,9 +205,12 @@
                 await txCharacteristic.startNotifications();
                 txCharacteristic.addEventListener('characteristicvaluechanged', handleData);
                 
-                document.getElementById('status').innerText = "Сенсор подключен. Ожидание данных...";
+                document.getElementById('status').innerText = "Сенсор подключен.";
                 document.getElementById('status').style.color = "#34c759";
+                
+                // Прячем кнопку подключения, показываем кнопку калибровки
                 document.getElementById('connectBtn').style.display = "none";
+                document.getElementById('calibrateBtn').style.display = "block";
                 
             } catch (error) {
                 console.error(error);
@@ -194,14 +219,12 @@
         });
 
         function handleData(event) {
-            // Чтение байтов и конвертация в строку
             const decoder = new TextDecoder('utf-8');
             const chunk = decoder.decode(event.target.value);
             dataBuffer += chunk;
 
-            // Парсинг полных строк, заканчивающихся на \n
             let lines = dataBuffer.split('\n');
-            dataBuffer = lines.pop(); // Последний (неполный) кусок оставляем в буфере
+            dataBuffer = lines.pop(); 
 
             lines.forEach(line => {
                 line = line.trim();
@@ -209,8 +232,16 @@
                     let [fsr, pitch, roll] = line.split(',').map(Number);
                     
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
+                        // Обновляем текущие углы
+                        currentPitch = pitch;
+                        currentRoll = roll;
+                        
+                        // Считаем относительные углы (текущий минус запомненный)
+                        let relativePitch = currentPitch - pitchOffset;
+                        let relativeRoll = currentRoll - rollOffset;
+
                         updateFSR(fsr);
-                        drawBalance(pitch, roll);
+                        drawBalance(relativePitch, relativeRoll);
                     }
                 }
             });
