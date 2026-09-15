@@ -91,19 +91,18 @@
         // ГЛАВНЫЕ НАСТРОЙКИ (МЕНЯЙ ПОД СЕБЯ)
         // ==========================================
         
-        // 1. ЧУВСТВИТЕЛЬНОСТЬ (увеличено с 15 до 50). Если слишком быстро - сделай 30. Если мало - 70.
         const BALANCE_SENSITIVITY = 50; 
         
         // 2. НАСТРОЙКА ОСЕЙ
-        const SWAP_AXES = true;  // true: Меняет местами (вперед-назад становится влево-вправо). То, что ты просил!
-        const INVERT_X = false;  // true: Сделает движение влево/вправо зеркальным, если вдруг оно перепутано.
-        const INVERT_Y = false;  // true: Сделает движение вперед/назад зеркальным.
+        const SWAP_AXES = false; // <-- ВЕРНУЛ ОБРАТНО. Вправо-влево снова станет горизонталью!
+        const INVERT_X = false;  // <-- Если точка летит влево, когда ты качнулся вправо, поменяй тут false на true
+        const INVERT_Y = false;  // <-- Если точка летит назад, когда ты качнулся вперед, поменяй тут false на true
         
         // 3. ПРОЧИЕ ПАРАМЕТРЫ
-        const FSR_MAX_Y = 100;        // Потолок давления
-        const BALANCE_SMOOTHING = 0.8; // Плавность (0.1 - резко, 0.9 - очень плавно)
-        const TRAIL_LENGTH = 300;     // Длина синего следа
-        const RECORD_TIME_MS = 10000; // Время записи (10000 = 10 сек)
+        const FSR_MAX_Y = 100;        
+        const BALANCE_SMOOTHING = 0.8; 
+        const TRAIL_LENGTH = 300;     
+        const RECORD_TIME_MS = 10000; 
         
         // ==========================================
 
@@ -138,7 +137,6 @@
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
-            // Отрисовка следа
             if (pathHistory.length > 1) {
                 ctx.beginPath();
                 ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
@@ -150,7 +148,6 @@
                 ctx.stroke();
             }
 
-            // Отрисовка точки
             if (pathHistory.length > 0) {
                 let lastPoint = pathHistory[pathHistory.length - 1];
                 ctx.beginPath();
@@ -192,7 +189,6 @@
             smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
             smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
 
-            // ЛОГИКА ПЕРЕКЛЮЧЕНИЯ ОСЕЙ
             let xVal = SWAP_AXES ? smoothPitch : smoothRoll;
             let yVal = SWAP_AXES ? smoothRoll : smoothPitch;
 
