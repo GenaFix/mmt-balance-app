@@ -53,7 +53,7 @@
             margin-bottom: 10px;
         }
         button:active { filter: brightness(0.9); }
-        #calibrateBtn { background-color: #34c759; display: none; } /* Зеленая кнопка калибровки, изначально скрыта */
+        #calibrateBtn { background-color: #34c759; display: none; }
         #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; }
     </style>
 </head>
@@ -78,13 +78,26 @@
     </div>
 
     <script>
+        // ==========================================
+        // НАСТРОЙКИ ЧУВСТВИТЕЛЬНОСТИ (МЕНЯТЬ ТУТ)
+        // ==========================================
+        
+        // Чем больше цифра, тем сильнее бегает точка от малейшего наклона (было 3, стало 15)
+        const BALANCE_SENSITIVITY = 15; 
+        
+        // Максимальное значение на графике силы. Чем меньше цифра, тем "выше" будет прыгать график (было 100, стало 30)
+        const FSR_MAX_Y = 30; 
+
+        // ==========================================
+
+
         // --- Настройки BLE ---
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
         const BLE_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
-        // --- Переменные для центровки (калибровки) ---
+        // --- Переменные для центровки ---
         let currentPitch = 0;
         let currentRoll = 0;
         let pitchOffset = 0;
@@ -111,11 +124,11 @@
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
-            // Вычисление позиции маркера
-            let markerX = cx + (relativeRoll * 3);
-            let markerY = cy - (relativePitch * 3); 
+            // Применяем новую чувствительность
+            let markerX = cx + (relativeRoll * BALANCE_SENSITIVITY);
+            let markerY = cy - (relativePitch * BALANCE_SENSITIVITY); 
 
-            // Ограничение выхода за границы
+            // Ограничение выхода за границы мишени
             markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
             markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
 
@@ -153,8 +166,8 @@
                 animation: false, 
                 scales: {
                     x: { display: false },
-                    // ВНИМАНИЕ: Измените 100 на другое значение под ваш новый датчик 3 кг, если график улетает вверх
-                    y: { beginAtZero: true, suggestedMax: 100 } 
+                    // Применяем новый потолок для графика
+                    y: { beginAtZero: true, suggestedMax: FSR_MAX_Y } 
                 },
                 plugins: { legend: { display: false } }
             }
@@ -168,16 +181,14 @@
 
         // --- Обработчик кнопки Калибровки ---
         document.getElementById('calibrateBtn').addEventListener('click', () => {
-            // Запоминаем текущие углы как нулевую точку
             pitchOffset = currentPitch;
             rollOffset = currentRoll;
             
-            // Очищаем график FSR для нового теста
             fsrChart.data.datasets[0].data = Array(50).fill(0);
             fsrChart.update('none');
 
             document.getElementById('status').innerText = "Центр установлен! Идет запись...";
-            document.getElementById('status').style.color = "#ff3b30"; // Красный цвет как индикатор записи
+            document.getElementById('status').style.color = "#ff3b30";
         });
 
         // --- Логика Web Bluetooth API ---
@@ -208,7 +219,6 @@
                 document.getElementById('status').innerText = "Сенсор подключен.";
                 document.getElementById('status').style.color = "#34c759";
                 
-                // Прячем кнопку подключения, показываем кнопку калибровки
                 document.getElementById('connectBtn').style.display = "none";
                 document.getElementById('calibrateBtn').style.display = "block";
                 
@@ -232,11 +242,9 @@
                     let [fsr, pitch, roll] = line.split(',').map(Number);
                     
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
-                        // Обновляем текущие углы
                         currentPitch = pitch;
                         currentRoll = roll;
                         
-                        // Считаем относительные углы (текущий минус запомненный)
                         let relativePitch = currentPitch - pitchOffset;
                         let relativeRoll = currentRoll - rollOffset;
 
