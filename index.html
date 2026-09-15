@@ -30,10 +30,11 @@
             justify-content: center;
         }
         .canvas-container { width: 100%; height: 100%; position: relative; }
+        
         #balanceCanvas {
             max-width: 100%;
             background: #fafafa;
-            border-radius: 50%;
+            border-radius: 10px; 
             border: 2px solid #ddd;
         }
         
@@ -88,20 +89,15 @@
 
     <script>
         // ==========================================
-        // НАСТРОЙКИ (Всё уже настроено под тебя)
+        // НАСТРОЙКИ
         // ==========================================
-        
-        const BALANCE_SENSITIVITY = 50; 
-        
-        // Оставил на случай, если пациент наденет датчик задом наперед (просто поменяй на true)
-        const INVERT_X = false;  // Зеркалит лево-право
-        const INVERT_Y = false;  // Зеркалит перед-зад
-        
+        const BALANCE_SENSITIVITY = 35; 
+        const INVERT_X = false;  
+        const INVERT_Y = false;  
         const FSR_MAX_Y = 100;        
         const BALANCE_SMOOTHING = 0.8; 
         const TRAIL_LENGTH = 300;     
         const RECORD_TIME_MS = 10000; 
-        
         // ==========================================
 
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -113,11 +109,7 @@
         let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; 
         let smoothPitch = 0, smoothRoll = 0;
         let pathHistory = [];
-
-        let isRecording = false;
-        let isReplaying = false;
-        let recordedSession = [];
-        let replayFrame = 0;
+        let isRecording = false, isReplaying = false, recordedSession = [], replayFrame = 0;
 
         const canvas = document.getElementById('balanceCanvas');
         const ctx = canvas.getContext('2d');
@@ -127,11 +119,14 @@
         function drawBalance() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // НОВАЯ КВАДРАТНАЯ СЕТКА МИШЕНИ
             ctx.strokeStyle = '#e0e0e0';
             ctx.lineWidth = 1;
             for(let r = 30; r <= 120; r += 30) {
-                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
+                ctx.strokeRect(cx - r, cy - r, r * 2, r * 2);
             }
+            
+            // Перекрестие
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
@@ -192,15 +187,12 @@
             let dirX = INVERT_X ? -1 : 1;
             let dirY = INVERT_Y ? -1 : 1;
 
-            // ==========================================
-            // МАГИЯ ПОВОРОТА НА 90 ГРАДУСОВ:
-            // X теперь зависит от Pitch, а Y зависит от Roll
-            // ==========================================
             let markerX = cx + (smoothPitch * BALANCE_SENSITIVITY * dirX);
-            let markerY = cy + (smoothRoll * BALANCE_SENSITIVITY * dirY); 
+            let markerY = cy - (smoothRoll * BALANCE_SENSITIVITY * dirY); 
 
-            markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
-            markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
+            // ТОЧНОЕ ограничение по внешнему квадрату (отступ 5 пикселей от краев)
+            markerX = Math.max(5, Math.min(245, markerX));
+            markerY = Math.max(5, Math.min(245, markerY));
 
             pathHistory.push({x: markerX, y: markerY});
             if(pathHistory.length > TRAIL_LENGTH) pathHistory.shift();
@@ -214,77 +206,50 @@
 
         document.getElementById('calibrateBtn').addEventListener('click', () => {
             if(isRecording || isReplaying) return;
-            
-            pitchOffset = currentPitch;
-            rollOffset = currentRoll;
-            fsrOffset = currentFsr; 
-            
-            smoothPitch = 0;
-            smoothRoll = 0;
-            pathHistory = [];
+            pitchOffset = currentPitch; rollOffset = currentRoll; fsrOffset = currentFsr; 
+            smoothPitch = 0; smoothRoll = 0; pathHistory = [];
             fsrChart.data.datasets[0].data = Array(50).fill(0);
-            fsrChart.update('none');
-            drawBalance();
-
+            fsrChart.update('none'); drawBalance();
             document.getElementById('status').innerText = "Откалибровано. Ноль установлен.";
             document.getElementById('status').style.color = "#34c759";
         });
 
         document.getElementById('recordBtn').addEventListener('click', () => {
             if(isReplaying) return;
-            
-            isRecording = true;
-            recordedSession = [];
-            pathHistory = []; 
+            isRecording = true; recordedSession = []; pathHistory = []; 
             fsrChart.data.datasets[0].data = Array(50).fill(0); 
-            
             document.getElementById('status').innerText = "ИДЕТ ЗАПИСЬ (10 сек)...";
             document.getElementById('status').style.color = "#ff3b30";
             document.getElementById('recordBtn').disabled = true;
             document.getElementById('replayBtn').style.display = "none";
-
             setTimeout(() => {
                 isRecording = false;
                 document.getElementById('status').innerText = "Запись завершена!";
                 document.getElementById('status').style.color = "#34c759";
                 document.getElementById('recordBtn').disabled = false;
-                
-                if (recordedSession.length > 0) {
-                    document.getElementById('replayBtn').style.display = "block"; 
-                }
+                if (recordedSession.length > 0) document.getElementById('replayBtn').style.display = "block"; 
             }, RECORD_TIME_MS);
         });
 
         document.getElementById('replayBtn').addEventListener('click', () => {
             if(isRecording || recordedSession.length === 0) return;
-            
-            isReplaying = true;
-            replayFrame = 0;
-            
-            pathHistory = [];
-            smoothPitch = 0; 
-            smoothRoll = 0;
+            isReplaying = true; replayFrame = 0; pathHistory = []; smoothPitch = 0; smoothRoll = 0;
             fsrChart.data.datasets[0].data = Array(50).fill(0);
-            
             document.getElementById('status').innerText = "ПРОИГРЫВАНИЕ ЗАПИСИ...";
             document.getElementById('status').style.color = "#af52de";
-            
             replayStep(); 
         });
 
         function replayStep() {
             if (!isReplaying) return;
-            
             if (replayFrame >= recordedSession.length) {
                 isReplaying = false;
                 document.getElementById('status').innerText = "Просмотр окончен. Ожидание...";
                 document.getElementById('status').style.color = "#666";
                 return;
             }
-            
             let frame = recordedSession[replayFrame];
             processVisuals(frame.f, frame.p, frame.r);
-            
             replayFrame++;
             setTimeout(replayStep, 30); 
         }
@@ -293,10 +258,8 @@
             try {
                 document.getElementById('status').innerText = "Поиск устройства...";
                 bleDevice = await navigator.bluetooth.requestDevice({
-                    filters: [{ namePrefix: 'Holyiot' }],
-                    optionalServices: [BLE_SERVICE_UUID]
+                    filters: [{ namePrefix: 'Holyiot' }], optionalServices: [BLE_SERVICE_UUID]
                 });
-
                 bleDevice.addEventListener('gattserverdisconnected', () => {
                     document.getElementById('status').innerText = "Отключено";
                     document.getElementById('connectBtn').style.display = "block";
@@ -304,24 +267,18 @@
                     document.getElementById('replayBtn').style.display = "none";
                     isRecording = false; isReplaying = false;
                 });
-
                 document.getElementById('status').innerText = "Подключение...";
                 bleServer = await bleDevice.gatt.connect();
                 bleService = await bleServer.getPrimaryService(BLE_SERVICE_UUID);
                 txCharacteristic = await bleService.getCharacteristic(BLE_TX_UUID);
-
                 await txCharacteristic.startNotifications();
                 txCharacteristic.addEventListener('characteristicvaluechanged', handleData);
-                
                 document.getElementById('status').innerText = "Сенсор подключен.";
                 document.getElementById('status').style.color = "#34c759";
-                
                 document.getElementById('connectBtn').style.display = "none";
                 document.getElementById('controlPanel').style.display = "flex";
-                
             } catch (error) {
-                console.error(error);
-                document.getElementById('status').innerText = "Ошибка: " + error.message;
+                console.error(error); document.getElementById('status').innerText = "Ошибка: " + error.message;
             }
         });
 
@@ -330,24 +287,14 @@
             dataBuffer += decoder.decode(event.target.value);
             let lines = dataBuffer.split('\n');
             dataBuffer = lines.pop(); 
-
             lines.forEach(line => {
                 line = line.trim();
                 if(line) {
                     let [fsr, pitch, roll] = line.split(',').map(Number);
-                    
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
-                        currentFsr = fsr;
-                        currentPitch = pitch;
-                        currentRoll = roll;
-                        
-                        if (isRecording) {
-                            recordedSession.push({ f: fsr, p: pitch, r: roll });
-                        }
-
-                        if (!isReplaying) {
-                            processVisuals(fsr, pitch, roll);
-                        }
+                        currentFsr = fsr; currentPitch = pitch; currentRoll = roll;
+                        if (isRecording) recordedSession.push({ f: fsr, p: pitch, r: roll });
+                        if (!isReplaying) processVisuals(fsr, pitch, roll);
                     }
                 }
             });
