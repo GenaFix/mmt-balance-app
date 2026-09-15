@@ -79,37 +79,37 @@
 
     <script>
         // ==========================================
-        // НАСТРОЙКИ ЧУВСТВИТЕЛЬНОСТИ (МЕНЯТЬ ТУТ)
+        // НАСТРОЙКИ ЧУВСТВИТЕЛЬНОСТИ И ФИЛЬТРОВ
         // ==========================================
         
-        // Чем больше цифра, тем сильнее бегает точка от малейшего наклона (было 3, стало 15)
-        const BALANCE_SENSITIVITY = 15; 
-        
-        // Максимальное значение на графике силы. Чем меньше цифра, тем "выше" будет прыгать график (было 100, стало 30)
-        const FSR_MAX_Y = 30; 
+        const BALANCE_SENSITIVITY = 15; // Чувствительность отклонения (градусы в пиксели)
+        const FSR_MAX_Y = 30; // Максимальная высота графика силы (было 30)
+
+        // НОВЫЕ НАСТРОЙКИ:
+        const BALANCE_SMOOTHING = 0.8; // Сглаживание рывков датчика: от 0 (без сглаживания) до 0.95 (очень плавное, как в киселе)
+        const TRAIL_LENGTH = 150; // Длина следа (сколько последних точек движения рисовать на экране)
 
         // ==========================================
 
-
-        // --- Настройки BLE ---
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
         const BLE_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
-        // --- Переменные для центровки ---
-        let currentPitch = 0;
-        let currentRoll = 0;
-        let pitchOffset = 0;
-        let rollOffset = 0;
+        // Переменные для центровки и сглаживания
+        let currentPitch = 0, currentRoll = 0;
+        let pitchOffset = 0, rollOffset = 0;
+        let smoothPitch = 0, smoothRoll = 0;
+        
+        // Массив для хранения истории перемещений (СЛЕД)
+        let pathHistory = [];
 
-        // --- Инициализация графики (Баланс) ---
         const canvas = document.getElementById('balanceCanvas');
         const ctx = canvas.getContext('2d');
         const cx = canvas.width / 2;
         const cy = canvas.height / 2;
 
-        function drawBalance(relativePitch, relativeRoll) {
+        function drawBalance() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
             // Отрисовка мишени
@@ -124,26 +124,32 @@
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
-            // Применяем новую чувствительность
-            let markerX = cx + (relativeRoll * BALANCE_SENSITIVITY);
-            let markerY = cy - (relativePitch * BALANCE_SENSITIVITY); 
+            // Отрисовка СЛЕДА (статокинезиограмма)
+            if (pathHistory.length > 1) {
+                ctx.beginPath();
+                ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
+                for(let i = 1; i < pathHistory.length; i++) {
+                    ctx.lineTo(pathHistory[i].x, pathHistory[i].y);
+                }
+                ctx.strokeStyle = 'rgba(255, 59, 48, 0.4)'; // Полупрозрачный красный цвет для следа
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
 
-            // Ограничение выхода за границы мишени
-            markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
-            markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
-
-            // Отрисовка маркера вектора
-            ctx.beginPath();
-            ctx.arc(markerX, markerY, 8, 0, 2 * Math.PI);
-            ctx.fillStyle = '#ff3b30';
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
+            // Отрисовка текущей точки баланса
+            if (pathHistory.length > 0) {
+                let lastPoint = pathHistory[pathHistory.length - 1];
+                ctx.beginPath();
+                ctx.arc(lastPoint.x, lastPoint.y, 8, 0, 2 * Math.PI);
+                ctx.fillStyle = '#ff3b30';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
         }
-        drawBalance(0, 0); 
+        drawBalance(); 
 
-        // --- Инициализация графики (ММТ FSR) ---
         const ctxChart = document.getElementById('fsrChart').getContext('2d');
         const fsrChart = new Chart(ctxChart, {
             type: 'line',
@@ -166,7 +172,6 @@
                 animation: false, 
                 scales: {
                     x: { display: false },
-                    // Применяем новый потолок для графика
                     y: { beginAtZero: true, suggestedMax: FSR_MAX_Y } 
                 },
                 plugins: { legend: { display: false } }
@@ -179,11 +184,19 @@
             fsrChart.update('none'); 
         }
 
-        // --- Обработчик кнопки Калибровки ---
+        // Кнопка Калибровки
         document.getElementById('calibrateBtn').addEventListener('click', () => {
             pitchOffset = currentPitch;
             rollOffset = currentRoll;
             
+            // Сбрасываем сглаженные значения к нулю, чтобы точка прыгнула в центр без задержки
+            smoothPitch = 0;
+            smoothRoll = 0;
+
+            // Очищаем след
+            pathHistory = [];
+            
+            // Очищаем график FSR
             fsrChart.data.datasets[0].data = Array(50).fill(0);
             fsrChart.update('none');
 
@@ -191,7 +204,7 @@
             document.getElementById('status').style.color = "#ff3b30";
         });
 
-        // --- Логика Web Bluetooth API ---
+        // Логика Web Bluetooth
         document.getElementById('connectBtn').addEventListener('click', async () => {
             try {
                 document.getElementById('status').innerText = "Поиск устройства...";
@@ -248,8 +261,25 @@
                         let relativePitch = currentPitch - pitchOffset;
                         let relativeRoll = currentRoll - rollOffset;
 
+                        // ПРИМЕНЯЕМ ПРОГРАММНЫЙ ФИЛЬТР (Сглаживание)
+                        smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (relativePitch * (1 - BALANCE_SMOOTHING));
+                        smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (relativeRoll * (1 - BALANCE_SMOOTHING));
+
+                        let markerX = cx + (smoothRoll * BALANCE_SENSITIVITY);
+                        let markerY = cy - (smoothPitch * BALANCE_SENSITIVITY); 
+
+                        // Ограничение по краям мишени
+                        markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
+                        markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
+
+                        // ДОБАВЛЯЕМ В ИСТОРИЮ (СЛЕД)
+                        pathHistory.push({x: markerX, y: markerY});
+                        if(pathHistory.length > TRAIL_LENGTH) {
+                            pathHistory.shift(); // Удаляем самую старую точку, если след стал слишком длинным
+                        }
+
                         updateFSR(fsr);
-                        drawBalance(relativePitch, relativeRoll);
+                        drawBalance(); // Отрисовываем след и точку
                     }
                 }
             });
