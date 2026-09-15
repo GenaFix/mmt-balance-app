@@ -16,12 +16,12 @@
             flex-direction: column; 
             height: 100vh;
         }
-        h2 { text-align: center; font-size: 1.2rem; margin: 10px 0; }
+        h2 { text-align: center; font-size: 1.1rem; margin: 5px 0 10px 0; }
         .card {
             background: #fff;
             border-radius: 15px;
             padding: 15px;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             flex: 1;
             display: flex;
@@ -29,47 +29,60 @@
             align-items: center;
             justify-content: center;
         }
-        .canvas-container {
-            width: 100%;
-            height: 100%;
-            position: relative;
-        }
+        .canvas-container { width: 100%; height: 100%; position: relative; }
         #balanceCanvas {
             max-width: 100%;
             background: #fafafa;
             border-radius: 50%;
             border: 2px solid #ddd;
         }
+        
+        /* Стили кнопок */
         button {
-            background-color: #007aff;
-            color: white;
             border: none;
             padding: 15px;
             border-radius: 12px;
-            font-size: 1.1rem;
+            font-size: 1.05rem;
             font-weight: bold;
+            color: white;
             cursor: pointer;
             width: 100%;
             margin-bottom: 10px;
         }
-        button:active { filter: brightness(0.9); }
-        #calibrateBtn { background-color: #34c759; display: none; }
-        #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; }
+        button:active { filter: brightness(0.8); }
+        
+        #connectBtn { background-color: #007aff; }
+        
+        .control-panel { display: none; gap: 10px; width: 100%; margin-bottom: 10px; }
+        .control-panel button { margin-bottom: 0; flex: 1; padding: 12px; font-size: 0.95rem; }
+        
+        #calibrateBtn { background-color: #34c759; } /* Зеленая */
+        #recordBtn { background-color: #ff9500; } /* Оранжевая */
+        #replayBtn { background-color: #af52de; display: none; } /* Фиолетовая */
+        
+        #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; font-weight: 500; }
     </style>
 </head>
 <body>
 
     <button id="connectBtn">Подключить сенсор</button>
-    <button id="calibrateBtn">Начать диагностику (Центровка)</button>
+    
+    <!-- Панель управления (появится после подключения) -->
+    <div class="control-panel" id="controlPanel">
+        <button id="calibrateBtn">Центровка</button>
+        <button id="recordBtn">Запись (10с)</button>
+    </div>
+    <button id="replayBtn">▶ Проиграть запись</button>
+    
     <div id="status">Отключено</div>
 
-    <!-- Блок стабилометрии (Баланс) -->
+    <!-- Блок стабилометрии -->
     <div class="card">
         <h2>Баланс (Паттерн падения)</h2>
         <canvas id="balanceCanvas" width="250" height="250"></canvas>
     </div>
 
-    <!-- Блок ММТ (График силы) -->
+    <!-- Блок ММТ -->
     <div class="card" style="flex: 1.2;">
         <h2>График силы ММТ (FSR)</h2>
         <div class="canvas-container">
@@ -79,16 +92,13 @@
 
     <script>
         // ==========================================
-        // НАСТРОЙКИ ЧУВСТВИТЕЛЬНОСТИ И ФИЛЬТРОВ
+        // НАСТРОЙКИ
         // ==========================================
-        
-        const BALANCE_SENSITIVITY = 15; // Чувствительность отклонения (градусы в пиксели)
-        const FSR_MAX_Y = 30; // Максимальная высота графика силы (было 30)
-
-        // НОВЫЕ НАСТРОЙКИ:
-        const BALANCE_SMOOTHING = 0.8; // Сглаживание рывков датчика: от 0 (без сглаживания) до 0.95 (очень плавное, как в киселе)
-        const TRAIL_LENGTH = 150; // Длина следа (сколько последних точек движения рисовать на экране)
-
+        const BALANCE_SENSITIVITY = 15; 
+        const FSR_MAX_Y = 100; // Потолок графика давления
+        const BALANCE_SMOOTHING = 0.8; 
+        const TRAIL_LENGTH = 300; // Длина следа на экране
+        const RECORD_TIME_MS = 10000; // Время записи в миллисекундах (10 секунд)
         // ==========================================
 
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -96,14 +106,19 @@
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
-        // Переменные для центровки и сглаживания
-        let currentPitch = 0, currentRoll = 0;
-        let pitchOffset = 0, rollOffset = 0;
+        // Базовые переменные
+        let currentFsr = 0, currentPitch = 0, currentRoll = 0;
+        let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; // Калибровочные нули
         let smoothPitch = 0, smoothRoll = 0;
-        
-        // Массив для хранения истории перемещений (СЛЕД)
         let pathHistory = [];
 
+        // Переменные для режима Записи/Проигрывания
+        let isRecording = false;
+        let isReplaying = false;
+        let recordedSession = [];
+        let replayFrame = 0;
+
+        // Инициализация Canvas
         const canvas = document.getElementById('balanceCanvas');
         const ctx = canvas.getContext('2d');
         const cx = canvas.width / 2;
@@ -112,31 +127,28 @@
         function drawBalance() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // Отрисовка мишени
+            // Сетка мишени
             ctx.strokeStyle = '#e0e0e0';
             ctx.lineWidth = 1;
             for(let r = 30; r <= 120; r += 30) {
-                ctx.beginPath();
-                ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-                ctx.stroke();
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
             }
-            // Осевые линии
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
-            // Отрисовка СЛЕДА (статокинезиограмма)
+            // Отрисовка СЛЕДА (линии)
             if (pathHistory.length > 1) {
                 ctx.beginPath();
                 ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
                 for(let i = 1; i < pathHistory.length; i++) {
                     ctx.lineTo(pathHistory[i].x, pathHistory[i].y);
                 }
-                ctx.strokeStyle = 'rgba(255, 59, 48, 0.4)'; // Полупрозрачный красный цвет для следа
-                ctx.lineWidth = 3;
+                ctx.strokeStyle = '#007aff'; // Синий цвет линии
+                ctx.lineWidth = 2;
                 ctx.stroke();
             }
 
-            // Отрисовка текущей точки баланса
+            // Отрисовка текущей точки (красный кружок)
             if (pathHistory.length > 0) {
                 let lastPoint = pathHistory[pathHistory.length - 1];
                 ctx.beginPath();
@@ -150,78 +162,159 @@
         }
         drawBalance(); 
 
+        // Инициализация Графика
         const ctxChart = document.getElementById('fsrChart').getContext('2d');
         const fsrChart = new Chart(ctxChart, {
             type: 'line',
             data: {
                 labels: Array(50).fill(''), 
                 datasets: [{
-                    label: 'Сила давления',
+                    label: 'FSR',
                     data: Array(50).fill(0),
                     borderColor: '#007aff',
                     backgroundColor: 'rgba(0, 122, 255, 0.1)',
-                    borderWidth: 2,
-                    pointRadius: 0, 
-                    fill: true,
-                    tension: 0.2 
+                    borderWidth: 2, pointRadius: 0, fill: true, tension: 0.2 
                 }]
             },
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false, 
-                scales: {
-                    x: { display: false },
-                    y: { beginAtZero: true, suggestedMax: FSR_MAX_Y } 
-                },
+                responsive: true, maintainAspectRatio: false, animation: false, 
+                scales: { x: { display: false }, y: { beginAtZero: true, suggestedMax: FSR_MAX_Y } },
                 plugins: { legend: { display: false } }
             }
         });
 
-        function updateFSR(fsrValue) {
-            fsrChart.data.datasets[0].data.push(fsrValue);
+        // Главная функция обработки визуализации (вызывается и для Live, и для Проигрывателя)
+        function processVisuals(rawFsr, rawPitch, rawRoll) {
+            // Применяем калибровку (вычитаем стартовые "нули")
+            // Math.max(0, ...) гарантирует, что график давления не уйдет в минус
+            let f = Math.max(0, rawFsr - fsrOffset); 
+            let p = rawPitch - pitchOffset;
+            let r = rawRoll - rollOffset;
+
+            // Сглаживание гироскопа
+            smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
+            smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
+
+            let markerX = cx + (smoothRoll * BALANCE_SENSITIVITY);
+            let markerY = cy - (smoothPitch * BALANCE_SENSITIVITY); 
+
+            // Защита от вылета за края мишени
+            markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
+            markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
+
+            pathHistory.push({x: markerX, y: markerY});
+            if(pathHistory.length > TRAIL_LENGTH) pathHistory.shift();
+
+            fsrChart.data.datasets[0].data.push(f);
             fsrChart.data.datasets[0].data.shift(); 
             fsrChart.update('none'); 
+
+            drawBalance();
         }
 
-        // Кнопка Калибровки
+        // --- КНОПКА: ЦЕНТРОВКА ---
         document.getElementById('calibrateBtn').addEventListener('click', () => {
+            if(isRecording || isReplaying) return;
+            
+            // Запоминаем новые нули гироскопа И ДАВЛЕНИЯ
             pitchOffset = currentPitch;
             rollOffset = currentRoll;
+            fsrOffset = currentFsr; 
             
-            // Сбрасываем сглаженные значения к нулю, чтобы точка прыгнула в центр без задержки
             smoothPitch = 0;
             smoothRoll = 0;
-
-            // Очищаем след
             pathHistory = [];
-            
-            // Очищаем график FSR
             fsrChart.data.datasets[0].data = Array(50).fill(0);
             fsrChart.update('none');
+            drawBalance();
 
-            document.getElementById('status').innerText = "Центр установлен! Идет запись...";
-            document.getElementById('status').style.color = "#ff3b30";
+            document.getElementById('status').innerText = "Откалибровано. Ноль установлен.";
+            document.getElementById('status').style.color = "#34c759";
         });
 
-        // Логика Web Bluetooth
+        // --- КНОПКА: ЗАПИСЬ ---
+        document.getElementById('recordBtn').addEventListener('click', () => {
+            if(isReplaying) return;
+            
+            isRecording = true;
+            recordedSession = [];
+            pathHistory = []; // очищаем старый след перед новой записью
+            fsrChart.data.datasets[0].data = Array(50).fill(0); // сбрасываем график
+            
+            document.getElementById('status').innerText = "ИДЕТ ЗАПИСЬ (10 сек)...";
+            document.getElementById('status').style.color = "#ff3b30";
+            document.getElementById('recordBtn').disabled = true;
+            document.getElementById('replayBtn').style.display = "none";
+
+            // Таймер остановки записи
+            setTimeout(() => {
+                isRecording = false;
+                document.getElementById('status').innerText = "Запись завершена!";
+                document.getElementById('status').style.color = "#34c759";
+                document.getElementById('recordBtn').disabled = false;
+                
+                if (recordedSession.length > 0) {
+                    document.getElementById('replayBtn').style.display = "block"; // Показываем кнопку проигрывания
+                }
+            }, RECORD_TIME_MS);
+        });
+
+        // --- КНОПКА: ПРОИГРАТЬ ---
+        document.getElementById('replayBtn').addEventListener('click', () => {
+            if(isRecording || recordedSession.length === 0) return;
+            
+            isReplaying = true;
+            replayFrame = 0;
+            
+            // Сброс визуализации для старта из центра
+            pathHistory = [];
+            smoothPitch = 0; 
+            smoothRoll = 0;
+            fsrChart.data.datasets[0].data = Array(50).fill(0);
+            
+            document.getElementById('status').innerText = "ПРОИГРЫВАНИЕ ЗАПИСИ...";
+            document.getElementById('status').style.color = "#af52de";
+            
+            replayStep(); // Запускаем цикл воспроизведения
+        });
+
+        // Функция пошагового воспроизведения
+        function replayStep() {
+            if (!isReplaying) return;
+            
+            if (replayFrame >= recordedSession.length) {
+                isReplaying = false;
+                document.getElementById('status').innerText = "Просмотр окончен. Ожидание...";
+                document.getElementById('status').style.color = "#666";
+                return;
+            }
+            
+            // Берем сохраненный кадр и отправляем на отрисовку
+            let frame = recordedSession[replayFrame];
+            processVisuals(frame.f, frame.p, frame.r);
+            
+            replayFrame++;
+            setTimeout(replayStep, 30); // Задержка ~30мс (воспроизведение в реальном времени)
+        }
+
+        // --- BLE ЛОГИКА ---
         document.getElementById('connectBtn').addEventListener('click', async () => {
             try {
                 document.getElementById('status').innerText = "Поиск устройства...";
-                
                 bleDevice = await navigator.bluetooth.requestDevice({
                     filters: [{ namePrefix: 'Holyiot' }],
                     optionalServices: [BLE_SERVICE_UUID]
                 });
 
                 bleDevice.addEventListener('gattserverdisconnected', () => {
-                    document.getElementById('status').innerText = "Устройство отключено";
-                    document.getElementById('status').style.color = "#666";
+                    document.getElementById('status').innerText = "Отключено";
                     document.getElementById('connectBtn').style.display = "block";
-                    document.getElementById('calibrateBtn').style.display = "none";
+                    document.getElementById('controlPanel').style.display = "none";
+                    document.getElementById('replayBtn').style.display = "none";
+                    isRecording = false; isReplaying = false;
                 });
 
-                document.getElementById('status').innerText = "Подключение к GATT...";
+                document.getElementById('status').innerText = "Подключение...";
                 bleServer = await bleDevice.gatt.connect();
                 bleService = await bleServer.getPrimaryService(BLE_SERVICE_UUID);
                 txCharacteristic = await bleService.getCharacteristic(BLE_TX_UUID);
@@ -233,7 +326,7 @@
                 document.getElementById('status').style.color = "#34c759";
                 
                 document.getElementById('connectBtn').style.display = "none";
-                document.getElementById('calibrateBtn').style.display = "block";
+                document.getElementById('controlPanel').style.display = "flex";
                 
             } catch (error) {
                 console.error(error);
@@ -243,9 +336,7 @@
 
         function handleData(event) {
             const decoder = new TextDecoder('utf-8');
-            const chunk = decoder.decode(event.target.value);
-            dataBuffer += chunk;
-
+            dataBuffer += decoder.decode(event.target.value);
             let lines = dataBuffer.split('\n');
             dataBuffer = lines.pop(); 
 
@@ -255,31 +346,20 @@
                     let [fsr, pitch, roll] = line.split(',').map(Number);
                     
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
+                        // Постоянно обновляем текущие сырые значения
+                        currentFsr = fsr;
                         currentPitch = pitch;
                         currentRoll = roll;
                         
-                        let relativePitch = currentPitch - pitchOffset;
-                        let relativeRoll = currentRoll - rollOffset;
-
-                        // ПРИМЕНЯЕМ ПРОГРАММНЫЙ ФИЛЬТР (Сглаживание)
-                        smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (relativePitch * (1 - BALANCE_SMOOTHING));
-                        smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (relativeRoll * (1 - BALANCE_SMOOTHING));
-
-                        let markerX = cx + (smoothRoll * BALANCE_SENSITIVITY);
-                        let markerY = cy - (smoothPitch * BALANCE_SENSITIVITY); 
-
-                        // Ограничение по краям мишени
-                        markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
-                        markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
-
-                        // ДОБАВЛЯЕМ В ИСТОРИЮ (СЛЕД)
-                        pathHistory.push({x: markerX, y: markerY});
-                        if(pathHistory.length > TRAIL_LENGTH) {
-                            pathHistory.shift(); // Удаляем самую старую точку, если след стал слишком длинным
+                        // Если идет запись - сохраняем сырые данные
+                        if (isRecording) {
+                            recordedSession.push({ f: fsr, p: pitch, r: roll });
                         }
 
-                        updateFSR(fsr);
-                        drawBalance(); // Отрисовываем след и точку
+                        // Если сейчас НЕ идет проигрывание записи - рисуем Live-данные
+                        if (!isReplaying) {
+                            processVisuals(fsr, pitch, roll);
+                        }
                     }
                 }
             });
