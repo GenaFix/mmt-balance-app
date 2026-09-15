@@ -31,7 +31,6 @@
         }
         .canvas-container { width: 100%; height: 100%; position: relative; }
         
-        /* Полностью новый элемент для сброса кэша */
         #diagnosticCross {
             max-width: 100%;
             background: #ffffff;
@@ -78,7 +77,6 @@
 
     <div class="card">
         <h2>Направление падения</h2>
-        <!-- Переименовали холст, чтобы браузер 100% сбросил кэш графики -->
         <canvas id="diagnosticCross" width="250" height="250"></canvas>
     </div>
 
@@ -93,16 +91,17 @@
         // ==========================================
         // НАСТРОЙКИ КИНЕЗИОЛОГА
         // ==========================================
-        const BALANCE_SENSITIVITY = 35; 
+        const BALANCE_SENSITIVITY = 50; // Вернул высокую чувствительность
         
-        // НОВОЕ: Мертвая зона (в градусах). 
-        // Если отклонение меньше 1.0 градуса - считаем, что пациент стоит ровно. Мелкая дрожь отсекается.
-        const DEADZONE = 1.0; 
+        // Мертвая зона (в градусах). Было 1.0, стало 0.5 (реагирует быстрее).
+        const DEADZONE = 0.5; 
         
-        const INVERT_X = false;  
-        const INVERT_Y = false;  
+        // СГЛАЖИВАНИЕ. Было 0.85 (эффект киселя). Стало 0.4 (мгновенная реакция с легкой плавностью).
+        const BALANCE_SMOOTHING = 0.4; 
+        
+        const INVERT_X = false;  // Влево-Вправо
+        const INVERT_Y = false;  // Вперед-Назад
         const FSR_MAX_Y = 100;        
-        const BALANCE_SMOOTHING = 0.85; // Сделал чуть плавнее, чтобы "столбик" рос красиво
         const RECORD_TIME_MS = 10000; 
         // ==========================================
 
@@ -115,7 +114,6 @@
         let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; 
         let smoothPitch = 0, smoothRoll = 0;
         
-        // Больше не храним весь "хвост" рисунка, храним только текущую конечную координату
         let currentMarker = {x: 125, y: 125}; 
 
         let isRecording = false, isReplaying = false, recordedSession = [], replayFrame = 0;
@@ -128,17 +126,13 @@
         function drawBalance() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // 1. Отрисовка базового креста (серый)
             ctx.strokeStyle = '#f0f0f0';
             ctx.lineWidth = 12;
             ctx.lineCap = 'round';
             
-            // Вертикаль
             ctx.beginPath(); ctx.moveTo(cx, 30); ctx.lineTo(cx, canvas.height - 30); ctx.stroke();
-            // Горизонталь
             ctx.beginPath(); ctx.moveTo(30, cy); ctx.lineTo(canvas.width - 30, cy); ctx.stroke();
 
-            // 2. Подписи осей
             ctx.fillStyle = '#999';
             ctx.font = 'bold 11px Arial';
             ctx.textAlign = 'center';
@@ -148,11 +142,9 @@
             ctx.fillText('ВЛЕВО', 25, cy - 12);
             ctx.fillText('ВПРАВО', canvas.width - 25, cy - 12);
 
-            // 3. Отрисовка индикатора падения (цветная линия)
             let isNeutral = (currentMarker.x === cx && currentMarker.y === cy);
 
             if (!isNeutral) {
-                // Если есть падение, рисуем толстую красную линию по активной оси
                 ctx.strokeStyle = '#ff3b30';
                 ctx.lineWidth = 12;
                 ctx.beginPath();
@@ -161,10 +153,8 @@
                 ctx.stroke();
             }
 
-            // 4. Отрисовка центральной точки
             ctx.beginPath();
             ctx.arc(currentMarker.x, currentMarker.y, 8, 0, 2 * Math.PI);
-            // Если стоит ровно - зеленая, если падает - красная
             ctx.fillStyle = isNeutral ? '#34c759' : '#ff3b30'; 
             ctx.fill();
             ctx.strokeStyle = '#fff';
@@ -172,7 +162,6 @@
             ctx.stroke();
         }
         
-        // Рисуем начальный пустой крест
         drawBalance(); 
 
         const ctxChart = document.getElementById('fsrChart').getContext('2d');
@@ -206,37 +195,32 @@
             let dirX = INVERT_X ? -1 : 1;
             let dirY = INVERT_Y ? -1 : 1;
 
-            let rawX = smoothPitch * dirX;
-            let rawY = smoothRoll * dirY;
+            // ========================================================
+            // ИСПРАВЛЕНИЕ ОСЕЙ: Вернули Roll на X, а Pitch на Y
+            // ========================================================
+            let rawX = smoothRoll * dirX; 
+            let rawY = smoothPitch * dirY;
+            // ========================================================
 
-            // ==========================================
-            // ЛОГИКА ФИЛЬТРАЦИИ И СНАППИНГА К ОСЯМ
-            // ==========================================
-            
-            // Если наклон меньше мертвой зоны - игнорируем (точка по центру)
             if (Math.abs(rawX) < DEADZONE && Math.abs(rawY) < DEADZONE) {
                 rawX = 0;
                 rawY = 0;
             } else {
-                // Если наклон есть, выбираем ТОЛЬКО ОДНУ доминирующую ось
                 if (Math.abs(rawX) > Math.abs(rawY)) {
-                    rawY = 0; // Движение только влево/вправо
+                    rawY = 0; 
                 } else {
-                    rawX = 0; // Движение только вперед/назад
+                    rawX = 0; 
                 }
             }
 
-            // Вычисляем координаты для отрисовки
             let markerX = cx + (rawX * BALANCE_SENSITIVITY);
             let markerY = cy - (rawY * BALANCE_SENSITIVITY); 
 
-            // Ограничиваем, чтобы полоса не вылезала за края креста (30 пикселей отступа)
             markerX = Math.max(30, Math.min(canvas.width - 30, markerX));
             markerY = Math.max(30, Math.min(canvas.height - 30, markerY));
 
             currentMarker = {x: markerX, y: markerY};
 
-            // Обновляем график ММТ
             fsrChart.data.datasets[0].data.push(f);
             fsrChart.data.datasets[0].data.shift(); 
             fsrChart.update('none'); 
