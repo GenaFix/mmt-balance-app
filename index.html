@@ -88,17 +88,15 @@
 
     <script>
         // ==========================================
-        // ГЛАВНЫЕ НАСТРОЙКИ (МЕНЯЙ ПОД СЕБЯ)
+        // НАСТРОЙКИ (Всё уже настроено под тебя)
         // ==========================================
         
         const BALANCE_SENSITIVITY = 50; 
         
-        // 2. НАСТРОЙКА ОСЕЙ
-        const SWAP_AXES = false; // <-- ВЕРНУЛ ОБРАТНО. Вправо-влево снова станет горизонталью!
-        const INVERT_X = false;  // <-- Если точка летит влево, когда ты качнулся вправо, поменяй тут false на true
-        const INVERT_Y = false;  // <-- Если точка летит назад, когда ты качнулся вперед, поменяй тут false на true
+        // Оставил на случай, если пациент наденет датчик задом наперед (просто поменяй на true)
+        const INVERT_X = false;  // Зеркалит лево-право
+        const INVERT_Y = false;  // Зеркалит перед-зад
         
-        // 3. ПРОЧИЕ ПАРАМЕТРЫ
         const FSR_MAX_Y = 100;        
         const BALANCE_SMOOTHING = 0.8; 
         const TRAIL_LENGTH = 300;     
@@ -137,6 +135,7 @@
             ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
 
+            // Отрисовка следа
             if (pathHistory.length > 1) {
                 ctx.beginPath();
                 ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
@@ -148,6 +147,7 @@
                 ctx.stroke();
             }
 
+            // Отрисовка точки
             if (pathHistory.length > 0) {
                 let lastPoint = pathHistory[pathHistory.length - 1];
                 ctx.beginPath();
@@ -189,14 +189,15 @@
             smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
             smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
 
-            let xVal = SWAP_AXES ? smoothPitch : smoothRoll;
-            let yVal = SWAP_AXES ? smoothRoll : smoothPitch;
-
             let dirX = INVERT_X ? -1 : 1;
             let dirY = INVERT_Y ? -1 : 1;
 
-            let markerX = cx + (xVal * BALANCE_SENSITIVITY * dirX);
-            let markerY = cy - (yVal * BALANCE_SENSITIVITY * dirY); 
+            // ==========================================
+            // МАГИЯ ПОВОРОТА НА 90 ГРАДУСОВ:
+            // X теперь зависит от Pitch, а Y зависит от Roll
+            // ==========================================
+            let markerX = cx + (smoothPitch * BALANCE_SENSITIVITY * dirX);
+            let markerY = cy + (smoothRoll * BALANCE_SENSITIVITY * dirY); 
 
             markerX = Math.max(10, Math.min(canvas.width - 10, markerX));
             markerY = Math.max(10, Math.min(canvas.height - 10, markerY));
