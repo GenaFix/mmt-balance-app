@@ -48,8 +48,10 @@
             cursor: pointer;
             width: 100%;
             margin-bottom: 10px;
+            transition: 0.3s;
         }
-        button:active { filter: brightness(0.8); }
+        button:active { filter: brightness(0.8); transform: scale(0.98); }
+        button:disabled { background-color: #ccc !important; cursor: not-allowed; }
         
         #connectBtn { background-color: #007aff; }
         
@@ -60,7 +62,7 @@
         #recordBtn { background-color: #ff9500; } 
         #replayBtn { background-color: #af52de; display: none; } 
         
-        #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; font-weight: 500; }
+        #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; font-weight: 500; height: 20px;}
     </style>
 </head>
 <body>
@@ -68,7 +70,7 @@
     <button id="connectBtn">Подключить сенсор</button>
     
     <div class="control-panel" id="controlPanel">
-        <button id="calibrateBtn">Центровка</button>
+        <button id="calibrateBtn">Центровка (3 сек)</button>
         <button id="recordBtn">Запись (10с)</button>
     </div>
     <button id="replayBtn">▶ Проиграть запись</button>
@@ -89,21 +91,13 @@
 
     <script>
         // ==========================================
-        // НАСТРОЙКИ КИНЕЗИОЛОГА
+        // НАСТРОЙКИ
         // ==========================================
+        const BALANCE_SENSITIVITY = 80; // Высокая чувствительность для резких рывков
+        const BALANCE_SMOOTHING = 0.1;  // Мгновенная реакция
         
-        // ЧУВСТВИТЕЛЬНОСТЬ: Повышена до 80, чтобы микро-рывки были визуально огромными
-        const BALANCE_SENSITIVITY = 80; 
-        
-        // МЕРТВАЯ ЗОНА: 0.5 градуса. 
-        const DEADZONE = 0.5; 
-        
-        // СГЛАЖИВАНИЕ (ЗАДЕРЖКА): Снижено до 0.1. Практически мгновенная, резкая реакция!
-        const BALANCE_SMOOTHING = 0.1; 
-        
-        // ОСИ:
         const INVERT_X = false;  
-        const INVERT_Y = true;  // <--- ПЕРЕВЕРНУЛИ ВПЕРЕД-НАЗАД КАК ТЫ ПРОСИЛ
+        const INVERT_Y = false;  // Вернул обратно, чтобы вперед было вперед!
         
         const FSR_MAX_Y = 100;        
         const RECORD_TIME_MS = 10000; 
@@ -114,13 +108,22 @@
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
-        let currentFsr = 0, currentPitch = 0, currentRoll = 0;
+        // Базовые переменные
+        let currentFsr = 0, rawPitch = 0, rawRoll = 0;
         let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; 
         let smoothPitch = 0, smoothRoll = 0;
         
-        let currentMarker = {x: 125, y: 125}; 
+        // Индивидуальные мертвые зоны (вычисляются при калибровке)
+        let deadzoneX = 0.5; 
+        let deadzoneY = 0.5;
 
+        let currentValX = 0; // Значение отклонения влево/вправо
+        let currentValY = 0; // Значение отклонения вперед/назад
+
+        // Переменные режимов
         let isRecording = false, isReplaying = false, recordedSession = [], replayFrame = 0;
+        let isCalibrating = false;
+        let calibrationData = { p: [], r: [] };
 
         const canvas = document.getElementById('diagnosticCross');
         const ctx = canvas.getContext('2d');
@@ -130,13 +133,14 @@
         function drawBalance() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // Серый крест-основа
             ctx.strokeStyle = '#f0f0f0';
             ctx.lineWidth = 12;
             ctx.lineCap = 'round';
-            
             ctx.beginPath(); ctx.moveTo(cx, 30); ctx.lineTo(cx, canvas.height - 30); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(30, cy); ctx.lineTo(canvas.width - 30, cy); ctx.stroke();
 
+            // Подписи
             ctx.fillStyle = '#999';
             ctx.font = 'bold 11px Arial';
             ctx.textAlign = 'center';
@@ -146,22 +150,40 @@
             ctx.fillText('ВЛЕВО', 25, cy - 12);
             ctx.fillText('ВПРАВО', canvas.width - 25, cy - 12);
 
-            let isNeutral = (currentMarker.x === cx && currentMarker.y === cy);
+            let isNeutral = (currentValX === 0 && currentValY === 0);
 
-            if (!isNeutral) {
-                ctx.strokeStyle = '#ff3b30';
+            // 1. Отрисовка горизонтальной полосы (ВЛЕВО/ВПРАВО) - СИНИЙ ЦВЕТ
+            if (currentValX !== 0) {
+                let targetX = cx + (currentValX * BALANCE_SENSITIVITY);
+                targetX = Math.max(30, Math.min(canvas.width - 30, targetX));
+                
+                ctx.strokeStyle = '#007aff'; // Синий
                 ctx.lineWidth = 12;
-                ctx.beginPath();
-                ctx.moveTo(cx, cy);
-                ctx.lineTo(currentMarker.x, currentMarker.y);
-                ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(targetX, cy); ctx.stroke();
+                
+                ctx.beginPath(); ctx.arc(targetX, cy, 6, 0, 2*Math.PI); 
+                ctx.fillStyle = '#007aff'; ctx.fill(); 
             }
 
+            // 2. Отрисовка вертикальной полосы (ВПЕРЕД/НАЗАД) - КРАСНЫЙ ЦВЕТ
+            if (currentValY !== 0) {
+                let targetY = cy - (currentValY * BALANCE_SENSITIVITY);
+                targetY = Math.max(30, Math.min(canvas.height - 30, targetY));
+                
+                ctx.strokeStyle = '#ff3b30'; // Красный
+                ctx.lineWidth = 12;
+                ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, targetY); ctx.stroke();
+                
+                ctx.beginPath(); ctx.arc(cx, targetY, 6, 0, 2*Math.PI); 
+                ctx.fillStyle = '#ff3b30'; ctx.fill(); 
+            }
+
+            // Центральная точка (Зеленая если баланс, Белая если падение)
             ctx.beginPath();
-            ctx.arc(currentMarker.x, currentMarker.y, 8, 0, 2 * Math.PI);
-            ctx.fillStyle = isNeutral ? '#34c759' : '#ff3b30'; 
+            ctx.arc(cx, cy, 8, 0, 2 * Math.PI);
+            ctx.fillStyle = isNeutral ? '#34c759' : '#ffffff'; 
             ctx.fill();
-            ctx.strokeStyle = '#fff';
+            ctx.strokeStyle = '#ffffff';
             ctx.lineWidth = 2;
             ctx.stroke();
         }
@@ -188,10 +210,17 @@
             }
         });
 
-        function processVisuals(rawFsr, rawPitch, rawRoll) {
-            let f = Math.max(0, rawFsr - fsrOffset); 
-            let p = rawPitch - pitchOffset;
-            let r = rawRoll - rollOffset;
+        function processVisuals(rawF, rawP, rawR) {
+            // Если идет калибровка - просто собираем данные микродвижений, графики не обновляем
+            if (isCalibrating) {
+                calibrationData.p.push(rawP);
+                calibrationData.r.push(rawR);
+                return;
+            }
+
+            let f = Math.max(0, rawF - fsrOffset); 
+            let p = rawP - pitchOffset;
+            let r = rawR - rollOffset;
 
             smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
             smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
@@ -199,27 +228,15 @@
             let dirX = INVERT_X ? -1 : 1;
             let dirY = INVERT_Y ? -1 : 1;
 
-            let rawX = smoothRoll * dirX; 
-            let rawY = smoothPitch * dirY;
+            let calcX = smoothRoll * dirX; 
+            let calcY = smoothPitch * dirY;
 
-            if (Math.abs(rawX) < DEADZONE && Math.abs(rawY) < DEADZONE) {
-                rawX = 0;
-                rawY = 0;
-            } else {
-                if (Math.abs(rawX) > Math.abs(rawY)) {
-                    rawY = 0; 
-                } else {
-                    rawX = 0; 
-                }
-            }
+            // ПРИМЕНЕНИЕ ИНДИВИДУАЛЬНОЙ МЕРТВОЙ ЗОНЫ ДЛЯ КАЖДОЙ ОСИ (Отсечение тремора)
+            if (Math.abs(calcX) < deadzoneX) calcX = 0;
+            if (Math.abs(calcY) < deadzoneY) calcY = 0;
 
-            let markerX = cx + (rawX * BALANCE_SENSITIVITY);
-            let markerY = cy - (rawY * BALANCE_SENSITIVITY); 
-
-            markerX = Math.max(30, Math.min(canvas.width - 30, markerX));
-            markerY = Math.max(30, Math.min(canvas.height - 30, markerY));
-
-            currentMarker = {x: markerX, y: markerY};
+            currentValX = calcX;
+            currentValY = calcY;
 
             fsrChart.data.datasets[0].data.push(f);
             fsrChart.data.datasets[0].data.shift(); 
@@ -228,40 +245,81 @@
             drawBalance();
         }
 
+        // ==========================================
+        // УМНАЯ КАЛИБРОВКА (3 СЕКУНДЫ)
+        // ==========================================
         document.getElementById('calibrateBtn').addEventListener('click', () => {
-            if(isRecording || isReplaying) return;
-            pitchOffset = currentPitch; rollOffset = currentRoll; fsrOffset = currentFsr; 
-            smoothPitch = 0; smoothRoll = 0; 
-            currentMarker = {x: cx, y: cy};
-            fsrChart.data.datasets[0].data = Array(50).fill(0);
-            fsrChart.update('none'); drawBalance();
-            document.getElementById('status').innerText = "Откалибровано. Ноль установлен.";
-            document.getElementById('status').style.color = "#34c759";
+            if(isRecording || isReplaying || isCalibrating) return;
+            
+            isCalibrating = true;
+            calibrationData = { p: [], r: [] };
+            
+            document.getElementById('calibrateBtn').disabled = true;
+            document.getElementById('recordBtn').disabled = true;
+            
+            document.getElementById('status').innerText = "Анализ осанки (3 сек). Попросите стоять ровно...";
+            document.getElementById('status').style.color = "#ff9500"; // Оранжевый
+
+            // Ждем 3 секунды, собирая данные
+            setTimeout(() => {
+                isCalibrating = false;
+                
+                // 1. Находим идеальный математический центр
+                let sumP = calibrationData.p.reduce((a, b) => a + b, 0);
+                let sumR = calibrationData.r.reduce((a, b) => a + b, 0);
+                pitchOffset = sumP / calibrationData.p.length;
+                rollOffset = sumR / calibrationData.r.length;
+                fsrOffset = currentFsr; // Обнуляем давление
+
+                // 2. Вычисляем индивидуальный "шум" (амплитуду покачивания)
+                let maxDevP = Math.max(...calibrationData.p.map(v => Math.abs(v - pitchOffset)));
+                let maxDevR = Math.max(...calibrationData.r.map(v => Math.abs(v - rollOffset)));
+
+                // 3. Устанавливаем мертвую зону (Естественный шум + 20% запаса). Минимум 0.5 градуса.
+                deadzoneY = Math.max(0.5, maxDevP * 1.2);
+                deadzoneX = Math.max(0.5, maxDevR * 1.2);
+
+                // Очистка графиков для старта
+                smoothPitch = 0; smoothRoll = 0; 
+                currentValX = 0; currentValY = 0;
+                fsrChart.data.datasets[0].data = Array(50).fill(0);
+                fsrChart.update('none'); 
+                drawBalance();
+
+                document.getElementById('calibrateBtn').disabled = false;
+                document.getElementById('recordBtn').disabled = false;
+
+                document.getElementById('status').innerText = "Откалибровано. Шум отсечен. Готов к тесту.";
+                document.getElementById('status').style.color = "#34c759";
+            }, 3000); // 3000 мс = 3 секунды
         });
 
         document.getElementById('recordBtn').addEventListener('click', () => {
-            if(isReplaying) return;
+            if(isReplaying || isCalibrating) return;
             isRecording = true; recordedSession = []; 
-            currentMarker = {x: cx, y: cy}; 
+            currentValX = 0; currentValY = 0;
             fsrChart.data.datasets[0].data = Array(50).fill(0); 
-            document.getElementById('status').innerText = "ИДЕТ ЗАПИСЬ (10 сек)...";
+            document.getElementById('status').innerText = "ИДЕТ ЗАПИСЬ ПАДЕНИЯ (10 сек)...";
             document.getElementById('status').style.color = "#ff3b30";
+            document.getElementById('calibrateBtn').disabled = true;
             document.getElementById('recordBtn').disabled = true;
             document.getElementById('replayBtn').style.display = "none";
+            
             setTimeout(() => {
                 isRecording = false;
                 document.getElementById('status').innerText = "Запись завершена!";
                 document.getElementById('status').style.color = "#34c759";
+                document.getElementById('calibrateBtn').disabled = false;
                 document.getElementById('recordBtn').disabled = false;
                 if (recordedSession.length > 0) document.getElementById('replayBtn').style.display = "block"; 
             }, RECORD_TIME_MS);
         });
 
         document.getElementById('replayBtn').addEventListener('click', () => {
-            if(isRecording || recordedSession.length === 0) return;
+            if(isRecording || recordedSession.length === 0 || isCalibrating) return;
             isReplaying = true; replayFrame = 0; 
             smoothPitch = 0; smoothRoll = 0;
-            currentMarker = {x: cx, y: cy};
+            currentValX = 0; currentValY = 0;
             fsrChart.data.datasets[0].data = Array(50).fill(0);
             document.getElementById('status').innerText = "ПРОИГРЫВАНИЕ ЗАПИСИ...";
             document.getElementById('status').style.color = "#af52de";
@@ -272,12 +330,15 @@
             if (!isReplaying) return;
             if (replayFrame >= recordedSession.length) {
                 isReplaying = false;
-                document.getElementById('status').innerText = "Просмотр окончен. Ожидание...";
+                document.getElementById('status').innerText = "Просмотр окончен. Готов к новому тесту.";
                 document.getElementById('status').style.color = "#666";
                 return;
             }
             let frame = recordedSession[replayFrame];
+            
+            // Во время проигрывания подаем сохраненные сырые данные на тот же алгоритм
             processVisuals(frame.f, frame.p, frame.r);
+            
             replayFrame++;
             setTimeout(replayStep, 30); 
         }
@@ -293,7 +354,7 @@
                     document.getElementById('connectBtn').style.display = "block";
                     document.getElementById('controlPanel').style.display = "none";
                     document.getElementById('replayBtn').style.display = "none";
-                    isRecording = false; isReplaying = false;
+                    isRecording = false; isReplaying = false; isCalibrating = false;
                 });
                 document.getElementById('status').innerText = "Подключение...";
                 bleServer = await bleDevice.gatt.connect();
@@ -320,7 +381,8 @@
                 if(line) {
                     let [fsr, pitch, roll] = line.split(',').map(Number);
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
-                        currentFsr = fsr; currentPitch = pitch; currentRoll = roll;
+                        currentFsr = fsr; rawPitch = pitch; rawRoll = roll;
+                        
                         if (isRecording) recordedSession.push({ f: fsr, p: pitch, r: roll });
                         if (!isReplaying) processVisuals(fsr, pitch, roll);
                     }
