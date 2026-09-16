@@ -7,54 +7,18 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-        body { 
-            margin: 0; 
-            padding: 15px; 
-            background-color: #f4f4f9; 
-            color: #333; 
-            display: flex; 
-            flex-direction: column; 
-            height: 100vh;
-        }
+        body { margin: 0; padding: 15px; background-color: #f4f4f9; color: #333; display: flex; flex-direction: column; height: 100vh; }
         h2 { text-align: center; font-size: 1.1rem; margin: 5px 0 10px 0; }
-        .card {
-            background: #fff;
-            border-radius: 15px;
-            padding: 15px;
-            margin-bottom: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
+        .card { background: #fff; border-radius: 15px; padding: 15px; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .canvas-container { width: 100%; height: 100%; position: relative; }
         
-        #diagnosticCross {
-            max-width: 100%;
-            background: #ffffff;
-            border-radius: 12px; 
-            border: 2px solid #eee;
-        }
+        #diagnosticCross { max-width: 100%; background: #ffffff; border-radius: 12px; border: 2px solid #eee; }
         
-        button {
-            border: none;
-            padding: 15px;
-            border-radius: 12px;
-            font-size: 1.05rem;
-            font-weight: bold;
-            color: white;
-            cursor: pointer;
-            width: 100%;
-            margin-bottom: 10px;
-            transition: 0.3s;
-        }
+        button { border: none; padding: 15px; border-radius: 12px; font-size: 1.05rem; font-weight: bold; color: white; cursor: pointer; width: 100%; margin-bottom: 10px; transition: 0.3s; }
         button:active { filter: brightness(0.8); transform: scale(0.98); }
         button:disabled { background-color: #ccc !important; cursor: not-allowed; }
         
         #connectBtn { background-color: #007aff; }
-        
         .control-panel { display: none; gap: 10px; width: 100%; margin-bottom: 10px; }
         .control-panel button { margin-bottom: 0; flex: 1; padding: 12px; font-size: 0.95rem; }
         
@@ -62,7 +26,7 @@
         #recordBtn { background-color: #ff9500; } 
         #replayBtn { background-color: #af52de; display: none; } 
         
-        #status { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 10px; font-weight: 500; height: 20px;}
+        #status { text-align: center; font-size: 0.95rem; color: #666; margin-bottom: 10px; font-weight: 600; min-height: 22px;}
     </style>
 </head>
 <body>
@@ -70,7 +34,7 @@
     <button id="connectBtn">Подключить сенсор</button>
     
     <div class="control-panel" id="controlPanel">
-        <button id="calibrateBtn">Центровка (3 сек)</button>
+        <button id="calibrateBtn">Интеллектуальная Калибровка</button>
         <button id="recordBtn">Запись (10с)</button>
     </div>
     <button id="replayBtn">▶ Проиграть запись</button>
@@ -91,18 +55,10 @@
 
     <script>
         // ==========================================
-        // ГЛАВНЫЕ НАСТРОЙКИ 
+        // НАСТРОЙКИ КИНЕЗИОЛОГА
         // ==========================================
-        
-        const SWAP_AXES = true; // ПРИНУДИТЕЛЬНО МЕНЯЕМ ОСИ МЕСТАМИ (ВПЕРЕД/НАЗАД <-> ВПРАВО/ВЛЕВО)
-        
-        // Если после смены осей будет ЗЕРКАЛЬНО (падаешь вперед, а рисует назад) - поставь тут true
-        const INVERT_X = false;  
-        const INVERT_Y = false;  
-        
-        const BALANCE_SENSITIVITY = 150; // Было 80. Теперь реакция визуально огромная.
-        const BALANCE_SMOOTHING = 0.05;  // Мгновенный отклик, без задержек.
-        
+        const BALANCE_SENSITIVITY = 150; 
+        const BALANCE_SMOOTHING = 0.05;  
         const FSR_MAX_Y = 100;        
         const RECORD_TIME_MS = 10000; 
         // ==========================================
@@ -112,19 +68,26 @@
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
+        // Базовые переменные
         let currentFsr = 0, rawPitch = 0, rawRoll = 0;
         let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; 
         let smoothPitch = 0, smoothRoll = 0;
         
-        let deadzoneX = 0.2; 
-        let deadzoneY = 0.2;
+        let deadzoneX = 0.2, deadzoneY = 0.2;
+        let currentValX = 0, currentValY = 0; 
 
-        let currentValX = 0; 
-        let currentValY = 0; 
+        // Динамические оси (Определяются автоматически при калибровке)
+        let axisY = 'p'; // Какая физическая ось отвечает за Вперед/Назад (p или r)
+        let signY = 1;   // Знак направления Вперед
+        let axisX = 'r'; // Какая физическая ось отвечает за Вправо/Влево (p или r)
+        let signX = 1;   // Знак направления Вправо
 
+        // Переменные режимов
         let isRecording = false, isReplaying = false, recordedSession = [], replayFrame = 0;
         let isCalibrating = false;
-        let calibrationData = { p: [], r: [] };
+        
+        // Буферы для калибровки
+        let tempP = [], tempR = [];
 
         const canvas = document.getElementById('diagnosticCross');
         const ctx = canvas.getContext('2d');
@@ -154,11 +117,9 @@
             if (currentValX !== 0) {
                 let targetX = cx + (currentValX * BALANCE_SENSITIVITY);
                 targetX = Math.max(30, Math.min(canvas.width - 30, targetX));
-                
                 ctx.strokeStyle = '#007aff'; 
                 ctx.lineWidth = 12;
                 ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(targetX, cy); ctx.stroke();
-                
                 ctx.beginPath(); ctx.arc(targetX, cy, 6, 0, 2*Math.PI); 
                 ctx.fillStyle = '#007aff'; ctx.fill(); 
             }
@@ -166,11 +127,9 @@
             if (currentValY !== 0) {
                 let targetY = cy - (currentValY * BALANCE_SENSITIVITY);
                 targetY = Math.max(30, Math.min(canvas.height - 30, targetY));
-                
                 ctx.strokeStyle = '#ff3b30'; 
                 ctx.lineWidth = 12;
                 ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, targetY); ctx.stroke();
-                
                 ctx.beginPath(); ctx.arc(cx, targetY, 6, 0, 2*Math.PI); 
                 ctx.fillStyle = '#ff3b30'; ctx.fill(); 
             }
@@ -208,9 +167,9 @@
 
         function processVisuals(rawF, rawP, rawR) {
             if (isCalibrating) {
-                calibrationData.p.push(rawP);
-                calibrationData.r.push(rawR);
-                return;
+                tempP.push(rawP);
+                tempR.push(rawR);
+                return; // Во время калибровки только копим данные, не рисуем
             }
 
             let f = Math.max(0, rawF - fsrOffset); 
@@ -220,24 +179,17 @@
             smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
             smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
 
-            let dirX = INVERT_X ? -1 : 1;
-            let dirY = INVERT_Y ? -1 : 1;
-
-            // Смена осей, если включен переключатель
-            let calcX = (SWAP_AXES ? smoothPitch : smoothRoll) * dirX; 
-            let calcY = (SWAP_AXES ? smoothRoll : smoothPitch) * dirY;
+            // ПРИМЕНЯЕМ ДИНАМИЧЕСКИЕ ОСИ, НАЙДЕННЫЕ ПРИ КАЛИБРОВКЕ
+            let calcX = (axisX === 'p' ? smoothPitch : smoothRoll) * signX;
+            let calcY = (axisY === 'p' ? smoothPitch : smoothRoll) * signY;
 
             // Мертвая зона
             if (Math.abs(calcX) < deadzoneX) calcX = 0;
             if (Math.abs(calcY) < deadzoneY) calcY = 0;
 
-            // Блокировка движения по диагонали (выбираем доминирующую ось)
+            // Блокировка движения по диагонали (доминирующая ось)
             if (calcX !== 0 || calcY !== 0) {
-                if (Math.abs(calcX) > Math.abs(calcY)) {
-                    calcY = 0; 
-                } else {
-                    calcX = 0; 
-                }
+                if (Math.abs(calcX) > Math.abs(calcY)) { calcY = 0; } else { calcX = 0; }
             }
 
             currentValX = calcX;
@@ -246,70 +198,102 @@
             fsrChart.data.datasets[0].data.push(f);
             fsrChart.data.datasets[0].data.shift(); 
             fsrChart.update('none'); 
-
             drawBalance();
         }
 
-        document.getElementById('calibrateBtn').addEventListener('click', () => {
+        // ==========================================
+        // МАСТЕР ИНТЕЛЛЕКТУАЛЬНОЙ КАЛИБРОВКИ
+        // ==========================================
+        function setStatus(msg, color) {
+            const status = document.getElementById('status');
+            status.innerText = msg;
+            status.style.color = color;
+        }
+
+        document.getElementById('calibrateBtn').addEventListener('click', async () => {
             if(isRecording || isReplaying || isCalibrating) return;
             
             isCalibrating = true;
-            calibrationData = { p: [], r: [] };
-            
             document.getElementById('calibrateBtn').disabled = true;
             document.getElementById('recordBtn').disabled = true;
-            
-            document.getElementById('status').innerText = "Анализ осанки (3 сек). Попросите стоять ровно...";
-            document.getElementById('status').style.color = "#ff9500"; 
 
-            setTimeout(() => {
-                isCalibrating = false;
-                
-                let sumP = calibrationData.p.reduce((a, b) => a + b, 0);
-                let sumR = calibrationData.r.reduce((a, b) => a + b, 0);
-                pitchOffset = sumP / calibrationData.p.length;
-                rollOffset = sumR / calibrationData.r.length;
-                fsrOffset = currentFsr; 
+            // ШАГ 1: ЦЕНТРОВКА
+            setStatus("ШАГ 1/3: Стойте ровно...", "#ff9500");
+            await new Promise(r => setTimeout(r, 1000)); // Задержка для подготовки
+            tempP = []; tempR = []; // Очищаем буфер
+            await new Promise(r => setTimeout(r, 2000)); // Собираем данные 2 сек
 
-                let maxDevP = Math.max(...calibrationData.p.map(v => Math.abs(v - pitchOffset)));
-                let maxDevR = Math.max(...calibrationData.r.map(v => Math.abs(v - rollOffset)));
+            let baseP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
+            let baseR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
+            pitchOffset = baseP; rollOffset = baseR; fsrOffset = currentFsr;
 
-                // ЖЕСТКОЕ ОГРАНИЧЕНИЕ ЩИТА: Максимум 0.8 градуса, минимум 0.1
-                let dzPitch = Math.min(0.8, Math.max(0.1, maxDevP * 0.6));
-                let dzRoll = Math.min(0.8, Math.max(0.1, maxDevR * 0.6));
+            // Шум
+            let maxDevP = Math.max(...tempP.map(v => Math.abs(v - pitchOffset)));
+            let maxDevR = Math.max(...tempR.map(v => Math.abs(v - rollOffset)));
+            let dzP = Math.min(0.8, Math.max(0.1, maxDevP * 0.6));
+            let dzR = Math.min(0.8, Math.max(0.1, maxDevR * 0.6));
 
-                deadzoneX = SWAP_AXES ? dzPitch : dzRoll;
-                deadzoneY = SWAP_AXES ? dzRoll : dzPitch;
+            // ШАГ 2: ПОИСК ОСИ ВПЕРЕД
+            setStatus("ШАГ 2/3: Наклонитесь ВПЕРЕД и замрите...", "#007aff");
+            await new Promise(r => setTimeout(r, 2000)); // Пациент наклоняется
+            tempP = []; tempR = [];
+            await new Promise(r => setTimeout(r, 2000)); // Собираем наклон
 
-                smoothPitch = 0; smoothRoll = 0; 
-                currentValX = 0; currentValY = 0;
-                fsrChart.data.datasets[0].data = Array(50).fill(0);
-                fsrChart.update('none'); 
-                drawBalance();
+            let fwdP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
+            let fwdR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
+            let deltaFwdP = fwdP - baseP;
+            let deltaFwdR = fwdR - baseR;
 
-                document.getElementById('calibrateBtn').disabled = false;
-                document.getElementById('recordBtn').disabled = false;
+            // Какая ось изменилась сильнее - та и есть Y
+            if (Math.abs(deltaFwdP) > Math.abs(deltaFwdR)) {
+                axisY = 'p'; signY = deltaFwdP > 0 ? 1 : -1;
+                axisX = 'r'; deadzoneY = dzP; deadzoneX = dzR;
+            } else {
+                axisY = 'r'; signY = deltaFwdR > 0 ? 1 : -1;
+                axisX = 'p'; deadzoneY = dzR; deadzoneX = dzP;
+            }
 
-                document.getElementById('status').innerText = "Откалибровано. Готов к тесту.";
-                document.getElementById('status').style.color = "#34c759";
-            }, 3000); 
+            // ШАГ 3: ПОИСК ОСИ ВПРАВО
+            setStatus("ШАГ 3/3: Наклонитесь ВПРАВО и замрите...", "#007aff");
+            await new Promise(r => setTimeout(r, 2000)); // Пациент наклоняется
+            tempP = []; tempR = [];
+            await new Promise(r => setTimeout(r, 2000)); // Собираем наклон
+
+            let rgtP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
+            let rgtR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
+            let deltaRgtP = rgtP - baseP;
+            let deltaRgtR = rgtR - baseR;
+
+            // Определяем знак для оси X
+            if (axisX === 'p') {
+                signX = deltaRgtP > 0 ? 1 : -1;
+            } else {
+                signX = deltaRgtR > 0 ? 1 : -1;
+            }
+
+            // ЗАВЕРШЕНИЕ
+            isCalibrating = false;
+            smoothPitch = 0; smoothRoll = 0; currentValX = 0; currentValY = 0;
+            fsrChart.data.datasets[0].data = Array(50).fill(0);
+            fsrChart.update('none'); drawBalance();
+
+            setStatus("Калибровка УСПЕШНА! Возвращайтесь в центр.", "#34c759");
+            document.getElementById('calibrateBtn').disabled = false;
+            document.getElementById('recordBtn').disabled = false;
         });
 
         document.getElementById('recordBtn').addEventListener('click', () => {
             if(isReplaying || isCalibrating) return;
-            isRecording = true; recordedSession = []; 
-            currentValX = 0; currentValY = 0;
+            isRecording = true; recordedSession = []; currentValX = 0; currentValY = 0;
             fsrChart.data.datasets[0].data = Array(50).fill(0); 
-            document.getElementById('status').innerText = "ИДЕТ ЗАПИСЬ ПАДЕНИЯ (10 сек)...";
-            document.getElementById('status').style.color = "#ff3b30";
+            setStatus("ИДЕТ ЗАПИСЬ ПАДЕНИЯ (10 сек)...", "#ff3b30");
             document.getElementById('calibrateBtn').disabled = true;
             document.getElementById('recordBtn').disabled = true;
             document.getElementById('replayBtn').style.display = "none";
             
             setTimeout(() => {
                 isRecording = false;
-                document.getElementById('status').innerText = "Запись завершена!";
-                document.getElementById('status').style.color = "#34c759";
+                setStatus("Запись завершена!", "#34c759");
                 document.getElementById('calibrateBtn').disabled = false;
                 document.getElementById('recordBtn').disabled = false;
                 if (recordedSession.length > 0) document.getElementById('replayBtn').style.display = "block"; 
@@ -318,12 +302,9 @@
 
         document.getElementById('replayBtn').addEventListener('click', () => {
             if(isRecording || recordedSession.length === 0 || isCalibrating) return;
-            isReplaying = true; replayFrame = 0; 
-            smoothPitch = 0; smoothRoll = 0;
-            currentValX = 0; currentValY = 0;
+            isReplaying = true; replayFrame = 0; smoothPitch = 0; smoothRoll = 0; currentValX = 0; currentValY = 0;
             fsrChart.data.datasets[0].data = Array(50).fill(0);
-            document.getElementById('status').innerText = "ПРОИГРЫВАНИЕ ЗАПИСИ...";
-            document.getElementById('status').style.color = "#af52de";
+            setStatus("ПРОИГРЫВАНИЕ ЗАПИСИ...", "#af52de");
             replayStep(); 
         });
 
@@ -331,8 +312,7 @@
             if (!isReplaying) return;
             if (replayFrame >= recordedSession.length) {
                 isReplaying = false;
-                document.getElementById('status').innerText = "Просмотр окончен. Готов к новому тесту.";
-                document.getElementById('status').style.color = "#666";
+                setStatus("Просмотр окончен. Готов к новому тесту.", "#666");
                 return;
             }
             let frame = recordedSession[replayFrame];
@@ -343,29 +323,29 @@
 
         document.getElementById('connectBtn').addEventListener('click', async () => {
             try {
-                document.getElementById('status').innerText = "Поиск устройства...";
+                setStatus("Поиск устройства...", "#666");
                 bleDevice = await navigator.bluetooth.requestDevice({
                     filters: [{ namePrefix: 'Holyiot' }], optionalServices: [BLE_SERVICE_UUID]
                 });
                 bleDevice.addEventListener('gattserverdisconnected', () => {
-                    document.getElementById('status').innerText = "Отключено";
+                    setStatus("Отключено", "#666");
                     document.getElementById('connectBtn').style.display = "block";
                     document.getElementById('controlPanel').style.display = "none";
                     document.getElementById('replayBtn').style.display = "none";
                     isRecording = false; isReplaying = false; isCalibrating = false;
                 });
-                document.getElementById('status').innerText = "Подключение...";
+                setStatus("Подключение...", "#666");
                 bleServer = await bleDevice.gatt.connect();
                 bleService = await bleServer.getPrimaryService(BLE_SERVICE_UUID);
                 txCharacteristic = await bleService.getCharacteristic(BLE_TX_UUID);
                 await txCharacteristic.startNotifications();
                 txCharacteristic.addEventListener('characteristicvaluechanged', handleData);
-                document.getElementById('status').innerText = "Сенсор подключен.";
-                document.getElementById('status').style.color = "#34c759";
+                
+                setStatus("Сенсор подключен.", "#34c759");
                 document.getElementById('connectBtn').style.display = "none";
                 document.getElementById('controlPanel').style.display = "flex";
             } catch (error) {
-                console.error(error); document.getElementById('status').innerText = "Ошибка: " + error.message;
+                console.error(error); setStatus("Ошибка: " + error.message, "#ff3b30");
             }
         });
 
@@ -380,7 +360,7 @@
                     let [fsr, pitch, roll] = line.split(',').map(Number);
                     if(!isNaN(fsr) && !isNaN(pitch) && !isNaN(roll)) {
                         currentFsr = fsr; rawPitch = pitch; rawRoll = roll;
-                        if (isRecording) recordedSession.push({ f: fsr, p: pitch, r: roll });
+                        if (isRecording && !isCalibrating) recordedSession.push({ f: fsr, p: pitch, r: roll });
                         if (!isReplaying) processVisuals(fsr, pitch, roll);
                     }
                 }
