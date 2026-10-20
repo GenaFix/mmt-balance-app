@@ -34,7 +34,7 @@
     <button id="connectBtn">Подключить сенсор</button>
     
     <div class="control-panel" id="controlPanel">
-        <button id="calibrateBtn">Интеллектуальная Калибровка</button>
+        <button id="calibrateBtn">Полная Калибровка (5 шагов)</button>
         <button id="recordBtn">Запись (10с)</button>
     </div>
     <button id="replayBtn">▶ Проиграть запись</button>
@@ -68,7 +68,6 @@
         let bleDevice, bleServer, bleService, txCharacteristic;
         let dataBuffer = "";
 
-        // Базовые переменные
         let currentFsr = 0, rawPitch = 0, rawRoll = 0;
         let fsrOffset = 0, pitchOffset = 0, rollOffset = 0; 
         let smoothPitch = 0, smoothRoll = 0;
@@ -76,17 +75,15 @@
         let deadzoneX = 0.2, deadzoneY = 0.2;
         let currentValX = 0, currentValY = 0; 
 
-        // Динамические оси (Определяются автоматически при калибровке)
-        let axisY = 'p'; // Какая физическая ось отвечает за Вперед/Назад (p или r)
-        let signY = 1;   // Знак направления Вперед
-        let axisX = 'r'; // Какая физическая ось отвечает за Вправо/Влево (p или r)
-        let signX = 1;   // Знак направления Вправо
+        // Динамические оси (Определяются автоматически при калибровке 4-х сторон)
+        let axisY = 'p'; 
+        let signY = 1;   
+        let axisX = 'r'; 
+        let signX = 1;   
 
-        // Переменные режимов
         let isRecording = false, isReplaying = false, recordedSession = [], replayFrame = 0;
         let isCalibrating = false;
         
-        // Буферы для калибровки
         let tempP = [], tempR = [];
 
         const canvas = document.getElementById('diagnosticCross');
@@ -169,7 +166,7 @@
             if (isCalibrating) {
                 tempP.push(rawP);
                 tempR.push(rawR);
-                return; // Во время калибровки только копим данные, не рисуем
+                return;
             }
 
             let f = Math.max(0, rawF - fsrOffset); 
@@ -179,15 +176,12 @@
             smoothPitch = (smoothPitch * BALANCE_SMOOTHING) + (p * (1 - BALANCE_SMOOTHING));
             smoothRoll = (smoothRoll * BALANCE_SMOOTHING) + (r * (1 - BALANCE_SMOOTHING));
 
-            // ПРИМЕНЯЕМ ДИНАМИЧЕСКИЕ ОСИ, НАЙДЕННЫЕ ПРИ КАЛИБРОВКЕ
             let calcX = (axisX === 'p' ? smoothPitch : smoothRoll) * signX;
             let calcY = (axisY === 'p' ? smoothPitch : smoothRoll) * signY;
 
-            // Мертвая зона
             if (Math.abs(calcX) < deadzoneX) calcX = 0;
             if (Math.abs(calcY) < deadzoneY) calcY = 0;
 
-            // Блокировка движения по диагонали (доминирующая ось)
             if (calcX !== 0 || calcY !== 0) {
                 if (Math.abs(calcX) > Math.abs(calcY)) { calcY = 0; } else { calcX = 0; }
             }
@@ -201,15 +195,15 @@
             drawBalance();
         }
 
-        // ==========================================
-        // МАСТЕР ИНТЕЛЛЕКТУАЛЬНОЙ КАЛИБРОВКИ
-        // ==========================================
         function setStatus(msg, color) {
             const status = document.getElementById('status');
             status.innerText = msg;
             status.style.color = color;
         }
 
+        // ==========================================
+        // МАСТЕР ВЫСОКОТОЧНОЙ КАЛИБРОВКИ (5 ШАГОВ)
+        // ==========================================
         document.getElementById('calibrateBtn').addEventListener('click', async () => {
             if(isRecording || isReplaying || isCalibrating) return;
             
@@ -217,61 +211,75 @@
             document.getElementById('calibrateBtn').disabled = true;
             document.getElementById('recordBtn').disabled = true;
 
-            // ШАГ 1: ЦЕНТРОВКА
-            setStatus("ШАГ 1/3: Стойте ровно...", "#ff9500");
-            await new Promise(r => setTimeout(r, 1000)); // Задержка для подготовки
-            tempP = []; tempR = []; // Очищаем буфер
-            await new Promise(r => setTimeout(r, 2000)); // Собираем данные 2 сек
+            // --- ШАГ 1: ЦЕНТР ---
+            setStatus("ШАГ 1/5: Стойте ровно...", "#ff9500");
+            await new Promise(r => setTimeout(r, 1000)); 
+            tempP = []; tempR = []; 
+            await new Promise(r => setTimeout(r, 2000)); 
 
             let baseP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
             let baseR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
             pitchOffset = baseP; rollOffset = baseR; fsrOffset = currentFsr;
 
-            // Шум
             let maxDevP = Math.max(...tempP.map(v => Math.abs(v - pitchOffset)));
             let maxDevR = Math.max(...tempR.map(v => Math.abs(v - rollOffset)));
             let dzP = Math.min(0.8, Math.max(0.1, maxDevP * 0.6));
             let dzR = Math.min(0.8, Math.max(0.1, maxDevR * 0.6));
 
-            // ШАГ 2: ПОИСК ОСИ ВПЕРЕД
-            setStatus("ШАГ 2/3: Наклонитесь ВПЕРЕД и замрите...", "#007aff");
-            await new Promise(r => setTimeout(r, 2000)); // Пациент наклоняется
+            // --- ШАГ 2: ВПЕРЕД ---
+            setStatus("ШАГ 2/5: Наклонитесь ВПЕРЕД и замрите...", "#007aff");
+            await new Promise(r => setTimeout(r, 2000)); 
             tempP = []; tempR = [];
-            await new Promise(r => setTimeout(r, 2000)); // Собираем наклон
-
+            await new Promise(r => setTimeout(r, 1500)); 
             let fwdP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
             let fwdR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
-            let deltaFwdP = fwdP - baseP;
-            let deltaFwdR = fwdR - baseR;
 
-            // Какая ось изменилась сильнее - та и есть Y
-            if (Math.abs(deltaFwdP) > Math.abs(deltaFwdR)) {
-                axisY = 'p'; signY = deltaFwdP > 0 ? 1 : -1;
-                axisX = 'r'; deadzoneY = dzP; deadzoneX = dzR;
-            } else {
-                axisY = 'r'; signY = deltaFwdR > 0 ? 1 : -1;
-                axisX = 'p'; deadzoneY = dzR; deadzoneX = dzP;
-            }
-
-            // ШАГ 3: ПОИСК ОСИ ВПРАВО
-            setStatus("ШАГ 3/3: Наклонитесь ВПРАВО и замрите...", "#007aff");
-            await new Promise(r => setTimeout(r, 2000)); // Пациент наклоняется
+            // --- ШАГ 3: НАЗАД ---
+            setStatus("ШАГ 3/5: Наклонитесь НАЗАД и замрите...", "#007aff");
+            await new Promise(r => setTimeout(r, 2000)); 
             tempP = []; tempR = [];
-            await new Promise(r => setTimeout(r, 2000)); // Собираем наклон
+            await new Promise(r => setTimeout(r, 1500)); 
+            let bwdP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
+            let bwdR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
 
+            // --- ШАГ 4: ВПРАВО ---
+            setStatus("ШАГ 4/5: Наклонитесь ВПРАВО и замрите...", "#007aff");
+            await new Promise(r => setTimeout(r, 2000)); 
+            tempP = []; tempR = [];
+            await new Promise(r => setTimeout(r, 1500)); 
             let rgtP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
             let rgtR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
-            let deltaRgtP = rgtP - baseP;
-            let deltaRgtR = rgtR - baseR;
 
-            // Определяем знак для оси X
-            if (axisX === 'p') {
-                signX = deltaRgtP > 0 ? 1 : -1;
+            // --- ШАГ 5: ВЛЕВО ---
+            setStatus("ШАГ 5/5: Наклонитесь ВЛЕВО и замрите...", "#007aff");
+            await new Promise(r => setTimeout(r, 2000)); 
+            tempP = []; tempR = [];
+            await new Promise(r => setTimeout(r, 1500)); 
+            let lftP = tempP.reduce((a,b)=>a+b,0)/tempP.length;
+            let lftR = tempR.reduce((a,b)=>a+b,0)/tempR.length;
+
+            // --- ДИФФЕРЕНЦИАЛЬНЫЙ РАСЧЕТ ОСЕЙ ---
+            let dFwdP = fwdP - baseP; let dFwdR = fwdR - baseR;
+            let dBwdP = bwdP - baseP; let dBwdR = bwdR - baseR;
+            let dRgtP = rgtP - baseP; let dRgtR = rgtR - baseR;
+            let dLftP = lftP - baseP; let dLftR = lftR - baseR;
+
+            let diffP_Y = Math.abs(dFwdP - dBwdP);
+            let diffR_Y = Math.abs(dFwdR - dBwdR);
+
+            if (diffP_Y > diffR_Y) {
+                axisY = 'p'; axisX = 'r';
+                signY = dFwdP > 0 ? 1 : -1;
+                signX = dRgtR > 0 ? 1 : -1;
+                deadzoneY = dzP; deadzoneX = dzR;
             } else {
-                signX = deltaRgtR > 0 ? 1 : -1;
+                axisY = 'r'; axisX = 'p';
+                signY = dFwdR > 0 ? 1 : -1;
+                signX = dRgtP > 0 ? 1 : -1;
+                deadzoneY = dzR; deadzoneX = dzP;
             }
 
-            // ЗАВЕРШЕНИЕ
+            // --- ЗАВЕРШЕНИЕ ---
             isCalibrating = false;
             smoothPitch = 0; smoothRoll = 0; currentValX = 0; currentValY = 0;
             fsrChart.data.datasets[0].data = Array(50).fill(0);
